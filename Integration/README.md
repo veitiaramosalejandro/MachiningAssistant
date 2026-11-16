@@ -1,5 +1,72 @@
 # MA Monitor → Machining Analysis：接口研究与协议草案
 
+## Entrada principal: RTSP en tiempo real
+
+La fuente de audio en tiempo real es RTSP, no gRPC. La configuración está en
+`.env` y apunta por defecto a:
+
+```text
+rtsp://localhost:18554/audio
+```
+
+Ejecutar el receptor RTSP y el clasificador:
+
+```powershell
+& .venv\Scripts\python.exe Integration\rtsp_stream_service.py
+```
+
+FFmpeg lee el RTSP, decodifica y convierte a PCM16LE estéreo de 44.1 kHz.
+Después `StreamingClassifier` acumula ventanas completas de cinco segundos y
+escribe las predicciones en `runs/rtsp/live_predictions.jsonl`. Una cola o
+ventana incompleta se informa como tail y no se clasifica.
+
+## Integración opcional: gRPC unary
+
+La primera implementación ejecutable está en `grpc_service.py`. Mantiene un
+checkpoint cargado en memoria y expone `ModelInfo` y `AnalyzeSegment`. El
+endpoint se enlaza a `127.0.0.1` por defecto, para no publicar un servicio sin
+TLS accidentalmente. `AnalyzeStream` sigue reservado para la segunda fase.
+
+Instalar las dependencias en el entorno del proyecto:
+
+```powershell
+& .venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+Arrancar el servicio con un checkpoint de clasificación:
+
+```powershell
+& .venv\Scripts\python.exe Integration\grpc_service.py `
+  --model cnn `
+  --checkpoint runs\train\<timestamp>\classification\cnn\best.pt `
+  --device cpu `
+  --host 127.0.0.1 `
+  --port 50051
+```
+
+También puede arrancarse usando los valores de `.env` del proyecto:
+
+```powershell
+& .venv\Scripts\python.exe Integration\grpc_service.py
+```
+
+Los argumentos CLI tienen prioridad sobre `.env`. Las variables disponibles
+son `MACHINING_GRPC_HOST`, `MACHINING_GRPC_PORT`, `MACHINING_GRPC_MODEL`,
+`MACHINING_GRPC_CHECKPOINT`, `MACHINING_GRPC_DEVICE` y
+`MACHINING_GRPC_THREADS`.
+
+En otra terminal, probar la conexión y una ventana completa de 5 segundos:
+
+```powershell
+& .venv\Scripts\python.exe Integration\grpc_client_smoke.py `
+  --endpoint 127.0.0.1:50051 `
+  --wav Dataset\Data\20261012_124615\audio_000000.wav
+```
+
+El contrato actual exige PCM16LE estéreo intercalado, 44.1 kHz y exactamente
+220500 frames por solicitud. La respuesta es orientativa: la confianza es un
+softmax no calibrado y no autoriza acciones sobre la máquina.
+
 核对日期：2026-11-11。配套文件：[machining_analysis_v1.proto](proto/machining_analysis_v1.proto)。
 
 **这是一份待双方讨论的接口提案，不是公司已确认的协议，也不是已经接入 MA 的服务。** 本次工作没有启动网络服务器、发送公司消息或执行机床控制。

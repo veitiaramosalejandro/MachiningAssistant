@@ -1,2 +1,4 @@
 -r CNN1D-VAE/requirements_msm.txt
 -r LSTM-VAE/requirements_msm.txt
+grpcio>=1.70,<2
+grpcio-tools>=1.70,<2
