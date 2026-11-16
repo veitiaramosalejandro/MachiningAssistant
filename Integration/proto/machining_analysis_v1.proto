@@ -1,0 +1,239 @@
+syntax = "proto3";
+
+package machining.analysis.v1;
+option csharp_namespace = "Machining.Analysis.V1";
+
+import "google/protobuf/timestamp.proto";
+
+// DRAFT FOR DISCUSSION, NOT A COMPANY-APPROVED OR IMPLEMENTED CONTRACT.
+// Current profile: 44100 Hz, stereo interleaved PCM16LE, 220500 valid frames.
+// Classification is advisory. No machine-control RPC is defined here.
+service MachiningAnalysis {
+  rpc ModelInfo(ModelInfoRequest) returns (ModelInfoResponse);
+  rpc AnalyzeSegment(AnalyzeSegmentRequest) returns (SegmentResult);
+  rpc AnalyzeStream(stream StreamRequest) returns (stream StreamResponse);
+}
+
+enum PcmEncoding {
+  PCM_ENCODING_UNSPECIFIED = 0;
+  PCM_ENCODING_S16LE_INTERLEAVED = 1;
+}
+
+enum TailPolicy {
+  TAIL_POLICY_UNSPECIFIED = 0;
+  // Current profile supports this policy only. Do not pad missing signal.
+  TAIL_POLICY_DISCARD_AND_REPORT = 1;
+}
+
+message CaptureTime {
+  // A named acquisition clock. Monotonic clocks from different domains
+  // must never be subtracted as if they shared an epoch.
+  string clock_domain = 1;
+  optional uint64 monotonic_ns = 2;
+  google.protobuf.Timestamp utc = 3;
+  optional uint64 estimated_uncertainty_ns = 4;
+}
+
+message ChannelDescription {
+  uint32 index = 1;                 // Zero-based interleaving position.
+  string logical_name = 2;          // Initially L / R, not proof of sensor type.
+  string sensor_id = 3;
+  string physical_quantity = 4;     // May be "unconfirmed".
+  string numeric_unit = 5;          // Current wire samples: "pcm_counts".
+  string calibration_id = 6;        // Empty if no calibration is established.
+  optional bool mapping_verified = 7;
+}
+
+message AudioFormat {
+  uint32 sample_rate_hz = 1;        // Current profile: 44100.
+  uint32 channel_count = 2;         // Current profile: 2.
+  PcmEncoding encoding = 3;
+  repeated ChannelDescription channel_descriptions = 4;
+}
+
+message ModelSelection {
+  string model_id = 1;              // Server registry key, never a filesystem path.
+  string required_model_version = 2; // Pin the immutable deployed checkpoint.
+}
+
+message ClassDefinition {
+  uint32 index = 1;
+  string name = 2;                  // From the loaded checkpoint, not a fixed enum.
+}
+
+message ModelDiagnostics {
+  // Presence distinguishes unknown provenance from an explicit false value.
+  optional bool synthetic_only = 1;
+  optional bool confidence_calibrated = 2;
+  bool cnc_context_used_by_model = 3; // False for the current raw-waveform models.
+  string label_semantics = 4;
+  optional bool deployment_mapping_verified = 5;
+  optional bool diagnostic_only = 6;
+  repeated string warnings = 7;
+}
+
+message ModelInfoRequest {
+  string model_id = 1;
+}
+
+message ModelInfoResponse {
+  string protocol_revision = 1;     // Example draft revision: "1.0-draft".
+  string model_id = 2;
+  string model_version = 3;
+  string model_family = 4;          // For example CNN1D-VAE or LSTM-VAE.
+  AudioFormat input_format = 5;
+  uint32 valid_frames = 6;          // 220500: exactly five seconds on the wire.
+  uint32 result_hop_frames = 7;     // 220500: nonoverlapping results in v1.
+  // Internal CNN stride padding is deliberately not part of the wire contract.
+  reserved 8;
+  reserved "model_input_frames";
+  repeated ClassDefinition classes = 9;
+  ModelDiagnostics diagnostics = 10;
+  uint32 recommended_chunk_frames = 11; // Proposal: 882 (20 ms).
+  uint32 max_pcm_chunk_frames = 12;     // Application limit, advertised by server.
+  uint32 max_rpc_message_bytes = 13;
+}
+
+message CncContext {
+  string context_id = 1;
+  string machine_id = 2;
+  string tool_id = 3;
+  string operation_id = 4;
+  string program_id = 5;
+  optional double spindle_speed_rpm = 6;
+  optional double feed_rate_mm_per_min = 7;
+  map<string, string> attributes = 8; // Bounded metadata, never classifier features.
+}
+
+message ContextEvent {
+  string session_id = 1;
+  uint64 revision = 2;
+  // Set only when the Monitor has mapped this event to the PCM frame clock.
+  optional uint64 effective_source_frame = 3;
+  CaptureTime observed_at = 4;
+  CncContext context = 5;
+}
+
+message ContextSpan {
+  uint64 first_source_frame = 1;
+  uint64 end_source_frame_exclusive = 2;
+  uint64 revision = 3;
+  CncContext context = 4;
+}
+
+message AnalyzeSegmentRequest {
+  string request_id = 1;
+  string session_id = 2;
+  string source_recording_id = 3;
+  ModelSelection model = 4;
+  AudioFormat input_format = 5;
+  uint64 first_source_frame = 6;
+  uint32 frame_count = 7;           // Must equal ModelInfo.valid_frames.
+  bytes pcm16_le = 8;              // 882000 bytes; no RIFF/WAV header or CNN pad.
+  CaptureTime first_frame_capture_time = 9;
+  CncContext context_at_start = 10;
+  repeated ContextEvent context_events = 11;
+  // Exclusive watermark: all mapped context events below it have been sent.
+  optional uint64 context_complete_through_source_frame = 12;
+}
+
+message ClassProbability {
+  uint32 class_index = 1;
+  string class_name = 2;
+  double probability = 3;          // Softmax score; not automatically calibrated.
+}
+
+message SegmentResult {
+  string request_id = 1;            // Unary request ID; empty for stream windows.
+  string session_id = 2;
+  string source_recording_id = 3;
+  string result_id = 4;             // Stable for the session/model/frame range.
+  string model_id = 5;
+  string model_version = 6;
+  uint64 window_index = 7;          // Zero-based within the session.
+  uint64 first_source_frame = 8;
+  uint64 end_source_frame_exclusive = 9;
+  uint32 valid_frames = 10;
+  uint32 predicted_class_index = 11;
+  string predicted_label = 12;      // Must match the indexed checkpoint class.
+  repeated ClassProbability class_probabilities = 13; // All N classes, index order.
+  double confidence = 14;           // Maximum softmax score, not a fault probability.
+  ModelDiagnostics diagnostics = 15;
+  repeated ContextSpan context_spans = 16;
+  bool context_alignment_complete = 17;
+  CaptureTime first_frame_capture_time = 18;
+  optional double inference_duration_ms = 19;
+  optional double queue_wait_ms = 20;
+  google.protobuf.Timestamp server_completed_at_utc = 21;
+}
+
+message StreamConfig {
+  string session_id = 1;            // New ID for each capture/RPC session.
+  string source_recording_id = 2;
+  ModelSelection model = 3;
+  AudioFormat input_format = 4;
+  uint64 first_source_frame = 5;
+  CaptureTime first_frame_capture_time = 6;
+  TailPolicy tail_policy = 7;
+  CncContext context_at_start = 8;
+}
+
+message PcmChunk {
+  string session_id = 1;
+  uint64 sequence_number = 2;       // Starts at zero; increments once per PCM chunk.
+  uint64 first_source_frame = 3;    // Must equal the previous chunk's exclusive end.
+  uint32 frame_count = 4;
+  bytes pcm16_le = 5;              // Exactly frame_count * channel_count * 2 bytes.
+  CaptureTime first_frame_capture_time = 6;
+  optional uint64 context_complete_through_source_frame = 7;
+}
+
+message EndSession {
+  string session_id = 1;
+  uint64 next_sequence_number = 2;  // Number of PCM chunks sent, including zero.
+  uint64 end_source_frame_exclusive = 3;
+  string reason = 4;
+}
+
+message StreamRequest {
+  // Exactly one config first, then context/PCM messages, then one explicit end.
+  // A missing/unknown payload or a second config is an application error.
+  oneof payload {
+    StreamConfig config = 1;
+    PcmChunk chunk = 2;
+    ContextEvent context = 3;
+    EndSession end = 4;
+  }
+}
+
+message StreamAccepted {
+  string session_id = 1;
+  ModelInfoResponse model = 2;      // Actual pinned model accepted for this session.
+}
+
+message StreamDiagnostic {
+  string session_id = 1;
+  string code = 2;                 // For example CONTEXT_INCOMPLETE or TAIL_DROPPED.
+  string message = 3;
+  optional uint64 expected_sequence_number = 4;
+  optional uint64 received_sequence_number = 5;
+  optional uint64 discarded_frames = 6;
+  // Fatal errors also terminate the RPC with the appropriate gRPC status.
+}
+
+message StreamCompleted {
+  string session_id = 1;
+  uint64 received_frames = 2;
+  uint64 result_count = 3;
+  uint64 discarded_tail_frames = 4;
+  uint64 end_source_frame_exclusive = 5;
+}
+
+message StreamResponse {
+  oneof payload {
+    StreamAccepted accepted = 1;
+    SegmentResult result = 2;
+    StreamDiagnostic diagnostic = 3;
+    StreamCompleted completed = 4;
+  }
+}

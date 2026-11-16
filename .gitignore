@@ -1,0 +1,15 @@
+.idea/
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+.DS_Store
+Dataset/Data/
+Dataset/Processed_5s/
+Dataset/Backups/
+Dataset/CSV_exports/
+Dataset/.prepare_dataset_*/
+Dataset/Preprocessing/current_dataset.json
+Dataset/Preprocessing/current_dataset.json.tmp
+runs/
+**/runs/

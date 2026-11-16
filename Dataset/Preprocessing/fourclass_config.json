@@ -1,0 +1,16 @@
+{
+  "sample_rate": 44100,
+  "channels": 2,
+  "segment_seconds": 5.0,
+  "labels": ["good", "sufficient", "bad", "very_bad"],
+  "injection_channel": 1,
+  "sine_frequency_hz": 1000.0,
+  "peak_amplitude_ratios": [0.0, 0.5, 1.5, 3.0],
+  "amplitude_jitter_fraction": 0.1,
+  "phase_policy": "shared_random_phase_per_base_segment",
+  "jitter_policy": "shared_amplitude_multiplier_per_base_segment",
+  "reference_statistic": "median_training_segment_rms",
+  "seed": 20261109,
+  "parameter_status": "engineering_defaults_not_yet_confirmed_by_professor",
+  "label_semantics": "good is the original unmodified signal; other labels are artificial sine-amplitude tiers, not measured fault or machining-quality grades"
+}
