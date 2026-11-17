@@ -2,3 +2,4 @@
 -r LSTM-VAE/requirements_msm.txt
 grpcio>=1.70,<2
 grpcio-tools>=1.70,<2
+psycopg[binary]>=3.2,<4

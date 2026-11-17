@@ -1,60 +1,963 @@
 <!doctype html>
 <html lang="es">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Machining Assistant Monitor</title>
-  <style>
-    :root { color-scheme:dark; --bg:#071118; --panel:#10232d; --panel-2:#132b36; --line:#244553; --line-soft:#1b3540; --text:#edf7f7; --muted:#8faeb8; --accent:#54e0c0; --accent-2:#3ca9df; --warn:#f7c66d; --bad:#ff7d87; }
-    * { box-sizing:border-box } body { margin:0; min-height:100vh; background:radial-gradient(circle at 12% 0%,#173947 0,#0b1b23 34%,var(--bg) 72%); color:var(--text); font:15px/1.5 Segoe UI,system-ui,sans-serif; letter-spacing:.01em; }
-    main { max-width:1440px; margin:0 auto; padding:34px 32px 56px; } header { display:flex; justify-content:space-between; gap:24px; align-items:flex-start; margin-bottom:28px; }
-    .header-copy { max-width:760px } .eyebrow { color:var(--accent); font-size:11px; font-weight:800; letter-spacing:.16em; text-transform:uppercase; margin-bottom:8px; } h1,h2,h3 { margin:0 0 8px } h1 { font-size:38px; line-height:1.05; letter-spacing:-1.2px } h2 { font-size:18px; letter-spacing:-.2px } h3 { font-size:15px } p { color:var(--muted); margin:6px 0 14px }
-    .grid { display:grid; grid-template-columns:repeat(12,minmax(0,1fr)); gap:18px } .card { min-width:0; background:linear-gradient(145deg,rgba(19,43,54,.96),rgba(13,31,40,.96)); border:1px solid var(--line); border-radius:16px; padding:21px; box-shadow:0 18px 42px #0004; } .card > h2::before { content:""; display:inline-block; width:4px; height:18px; margin:0 9px -3px 0; border-radius:4px; background:linear-gradient(var(--accent),var(--accent-2)); }
-    .span-4 { grid-column:span 4 } .span-5 { grid-column:span 5 } .span-7 { grid-column:span 7 } .span-8 { grid-column:span 8 } .span-12 { grid-column:span 12 }
-    label { display:block; color:var(--muted); font-size:12px; font-weight:700; letter-spacing:.04em; margin:14px 0 6px; text-transform:uppercase } select,input,button { width:100%; border:1px solid var(--line); border-radius:10px; padding:11px 12px; background:#091820; color:var(--text); font:inherit; transition:border-color .18s,box-shadow .18s,transform .18s; } select:focus,input:focus { outline:0; border-color:var(--accent-2); box-shadow:0 0 0 3px #3ca9df22; } select[multiple] { min-height:210px }
-    button { cursor:pointer; background:linear-gradient(135deg,#16706c,#155d73); border-color:#37b8a7; font-weight:750; } button:hover:not(:disabled) { transform:translateY(-1px); box-shadow:0 8px 20px #0004; } button.secondary { background:#193542; border-color:var(--line); } button:disabled { opacity:.42; cursor:not-allowed; transform:none }
-    .status { display:flex; gap:10px; align-items:center; color:var(--muted); text-align:right; padding:9px 13px; border:1px solid var(--line); border-radius:999px; background:#0b1b23aa; white-space:nowrap } .dot { width:9px; height:9px; display:inline-block; border-radius:50%; background:var(--bad); box-shadow:0 0 0 4px #ff7d8720 } .dot.ok { background:var(--accent); box-shadow:0 0 0 4px #54e0c020 }
-    .metric { font-size:32px; line-height:1.1; font-weight:800; letter-spacing:-.8px } .muted { color:var(--muted) } .ok { color:var(--accent) } .warn { color:var(--warn) } .bad { color:var(--bad) }
-    pre { max-height:320px; overflow:auto; background:#071117; border:1px solid var(--line-soft); padding:14px; border-radius:10px; white-space:pre-wrap; word-break:break-word; color:#b8d2d5; } table { width:100%; border-collapse:collapse; } th,td { text-align:left; padding:10px 8px; border-bottom:1px solid var(--line-soft); vertical-align:top; } th { color:var(--muted); font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; } td { color:#d7e6e7; }
-    .hidden { display:none } .pill { display:inline-block; padding:4px 9px; border-radius:999px; background:#1b414b; color:#b7d8d9; font-size:12px; } .notice { padding:11px 13px; border-left:3px solid var(--warn); background:#3a301c; color:#f8db9d; border-radius:8px; margin:10px 0; } .chart { overflow-x:auto; margin:16px 0 22px; } .chart svg { min-width:680px; width:100%; height:280px; background:#071117; border:1px solid var(--line-soft); border-radius:10px; } .legend { display:flex; gap:16px; flex-wrap:wrap; color:var(--muted); margin:8px 0; } .legend span::before { content:""; display:inline-block; width:12px; height:3px; margin:0 6px 3px 0; background:var(--legend); } .scroll-table { max-height:300px; overflow:auto; } .service-detail { overflow-wrap:anywhere; } .summary-card { min-height:146px; } .source-card { min-height:220px; } .config-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:0 14px; } .config-help { margin:14px 0 0; padding:12px 13px; border:1px solid var(--line-soft); border-radius:10px; background:#0b1b23; color:var(--muted); } .config-help strong { color:var(--text); } .config-group-title { grid-column:1/-1; color:var(--accent); font-size:11px; font-weight:800; letter-spacing:.12em; text-transform:uppercase; margin-top:8px; }
-    @media (max-width:900px) { .span-4,.span-5,.span-7,.span-8 { grid-column:span 12 } .config-grid { grid-template-columns:1fr } main { padding:22px 16px 40px } header { flex-direction:column } .status { text-align:left } h1 { font-size:31px } }
-  </style>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Machining Assistant Monitor</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            --bg: #071118;
+            --panel: #10232d;
+            --panel-2: #132b36;
+            --line: #244553;
+            --line-soft: #1b3540;
+            --text: #edf7f7;
+            --muted: #8faeb8;
+            --accent: #54e0c0;
+            --accent-2: #3ca9df;
+            --warn: #f7c66d;
+            --bad: #ff7d87;
+        }
+
+        * {
+            box-sizing: border-box
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: radial-gradient(circle at 12% 0%, #173947 0, #0b1b23 34%, var(--bg) 72%);
+            color: var(--text);
+            font: 15px/1.5 Segoe UI, system-ui, sans-serif;
+            letter-spacing: .01em;
+        }
+
+        main {
+            max-width: 1440px;
+            margin: 0 auto;
+            padding: 34px 32px 56px;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            gap: 24px;
+            align-items: flex-start;
+            margin-bottom: 28px;
+        }
+
+        .header-copy {
+            max-width: 760px
+        }
+
+        .eyebrow {
+            color: var(--accent);
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: .16em;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+
+        h1, h2, h3 {
+            margin: 0 0 8px
+        }
+
+        h1 {
+            font-size: 38px;
+            line-height: 1.05;
+            letter-spacing: -1.2px
+        }
+
+        h2 {
+            font-size: 18px;
+            letter-spacing: -.2px
+        }
+
+        h3 {
+            font-size: 15px
+        }
+
+        p {
+            color: var(--muted);
+            margin: 6px 0 14px
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns:repeat(12, minmax(0, 1fr));
+            gap: 18px
+        }
+
+        .card {
+            min-width: 0;
+            background: linear-gradient(145deg, rgba(19, 43, 54, .96), rgba(13, 31, 40, .96));
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            padding: 21px;
+            box-shadow: 0 18px 42px #0004;
+        }
+
+        .card > h2::before {
+            content: "";
+            display: inline-block;
+            width: 4px;
+            height: 18px;
+            margin: 0 9px -3px 0;
+            border-radius: 4px;
+            background: linear-gradient(var(--accent), var(--accent-2));
+        }
+
+        .span-4 {
+            grid-column: span 4
+        }
+
+        .span-5 {
+            grid-column: span 5
+        }
+
+        .span-7 {
+            grid-column: span 7
+        }
+
+        .span-8 {
+            grid-column: span 8
+        }
+
+        .span-12 {
+            grid-column: span 12
+        }
+
+        label {
+            display: block;
+            color: var(--muted);
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: .04em;
+            margin: 14px 0 6px;
+            text-transform: uppercase
+        }
+
+        select, input, button {
+            width: 100%;
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            padding: 11px 12px;
+            background: #091820;
+            color: var(--text);
+            font: inherit;
+            transition: border-color .18s, box-shadow .18s, transform .18s;
+        }
+
+        select:focus, input:focus {
+            outline: 0;
+            border-color: var(--accent-2);
+            box-shadow: 0 0 0 3px #3ca9df22;
+        }
+
+        select[multiple] {
+            min-height: 210px
+        }
+
+        button {
+            cursor: pointer;
+            background: linear-gradient(135deg, #16706c, #155d73);
+            border-color: #37b8a7;
+            font-weight: 750;
+        }
+
+        button:hover:not(:disabled) {
+            transform: translateY(-1px);
+            box-shadow: 0 8px 20px #0004;
+        }
+
+        button.secondary {
+            background: #193542;
+            border-color: var(--line);
+        }
+
+        button:disabled {
+            opacity: .42;
+            cursor: not-allowed;
+            transform: none
+        }
+
+        .status {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            color: var(--muted);
+            text-align: right;
+            padding: 9px 13px;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            background: #0b1b23aa;
+            white-space: nowrap
+        }
+
+        .dot {
+            width: 9px;
+            height: 9px;
+            display: inline-block;
+            border-radius: 50%;
+            background: var(--bad);
+            box-shadow: 0 0 0 4px #ff7d8720
+        }
+
+        .dot.ok {
+            background: var(--accent);
+            box-shadow: 0 0 0 4px #54e0c020
+        }
+
+        .metric {
+            font-size: 32px;
+            line-height: 1.1;
+            font-weight: 800;
+            letter-spacing: -.8px
+        }
+
+        .muted {
+            color: var(--muted)
+        }
+
+        .ok {
+            color: var(--accent)
+        }
+
+        .warn {
+            color: var(--warn)
+        }
+
+        .bad {
+            color: var(--bad)
+        }
+
+        pre {
+            max-height: 320px;
+            overflow: auto;
+            background: #071117;
+            border: 1px solid var(--line-soft);
+            padding: 14px;
+            border-radius: 10px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            color: #b8d2d5;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th, td {
+            text-align: left;
+            padding: 10px 8px;
+            border-bottom: 1px solid var(--line-soft);
+            vertical-align: top;
+        }
+
+        th {
+            color: var(--muted);
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: .04em;
+        }
+
+        td {
+            color: #d7e6e7;
+        }
+
+        .hidden {
+            display: none
+        }
+
+        .pill {
+            display: inline-block;
+            padding: 4px 9px;
+            border-radius: 999px;
+            background: #1b414b;
+            color: #b7d8d9;
+            font-size: 12px;
+        }
+
+        .notice {
+            padding: 11px 13px;
+            border-left: 3px solid var(--warn);
+            background: #3a301c;
+            color: #f8db9d;
+            border-radius: 8px;
+            margin: 10px 0;
+        }
+
+        .chart {
+            overflow-x: auto;
+            margin: 16px 0 22px;
+        }
+
+        .chart svg {
+            min-width: 680px;
+            width: 100%;
+            height: 280px;
+            background: #071117;
+            border: 1px solid var(--line-soft);
+            border-radius: 10px;
+        }
+
+        .legend {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            color: var(--muted);
+            margin: 8px 0;
+        }
+
+        .legend span::before {
+            content: "";
+            display: inline-block;
+            width: 12px;
+            height: 3px;
+            margin: 0 6px 3px 0;
+            background: var(--legend);
+        }
+
+        .scroll-table {
+            max-height: 300px;
+            overflow: auto;
+        }
+
+        .service-detail {
+            overflow-wrap: anywhere;
+        }
+
+        .summary-card {
+            min-height: 146px;
+        }
+
+        .source-card {
+            min-height: 220px;
+        }
+
+        .config-grid {
+            display: grid;
+            grid-template-columns:repeat(2, minmax(0, 1fr));
+            gap: 0 14px;
+        }
+
+        .config-help {
+            margin: 14px 0 0;
+            padding: 12px 13px;
+            border: 1px solid var(--line-soft);
+            border-radius: 10px;
+            background: #0b1b23;
+            color: var(--muted);
+        }
+
+        .config-help strong {
+            color: var(--text);
+        }
+
+        .config-group-title {
+            grid-column: 1/-1;
+            color: var(--accent);
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: .12em;
+            text-transform: uppercase;
+            margin-top: 8px;
+        }
+
+        .learning-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 12px;
+            margin: 16px 0;
+        }
+
+        .learning-item {
+            padding: 13px;
+            border: 1px solid var(--line-soft);
+            border-radius: 10px;
+            background: #0b1b23;
+        }
+
+        .learning-item .metric {
+            font-size: 24px;
+        }
+
+        .progress-track {
+            height: 10px;
+            margin: 9px 0 5px;
+            border-radius: 999px;
+            overflow: hidden;
+            background: #071117;
+            border: 1px solid var(--line-soft);
+        }
+
+        .progress-fill {
+            height: 100%;
+            border-radius: 999px;
+            background: linear-gradient(90deg, var(--accent-2), var(--accent));
+        }
+
+        .progress-fill.warn {
+            background: linear-gradient(90deg, #d8954a, var(--warn));
+        }
+
+        .history-table {
+            max-height: 280px;
+            overflow: auto;
+        }
+
+        @media (max-width: 900px) {
+            .span-4, .span-5, .span-7, .span-8 {
+                grid-column: span 12
+            }
+
+            .config-grid {
+                grid-template-columns:1fr
+            }
+
+            .learning-grid {
+                grid-template-columns:1fr
+            }
+
+            main {
+                padding: 22px 16px 40px
+            }
+
+            header {
+                flex-direction: column
+            }
+
+            .status {
+                text-align: left
+            }
+
+            h1 {
+                font-size: 31px
+            }
+        }
+    </style>
 </head>
 <body>
 <main>
-  <header><div class="header-copy"><div class="eyebrow">Industrial audio intelligence · local control plane</div><h1>Machining Assistant</h1><p>Monitoriza el servicio, prepara grabaciones y entrena modelos VAE desde un único espacio de trabajo.</p></div><div class="status"><span id="dot" class="dot"></span><span id="statusText">Conectando...</span></div></header>
-  <section class="grid">
-    <article class="card span-4"><h2>Servicio</h2><div id="serviceMetric" class="metric">—</div><p id="serviceDetail" class="service-detail">Verificando API...</p><button class="secondary" onclick="refreshAll()">Actualizar estado</button></article>
-    <article class="card span-8 summary-card"><h2>Resumen operativo</h2><div id="summary" class="muted">Selecciona una máquina para consultar ejecuciones.</div></article>
-    <article class="card span-4"><h2>1. Conexión y ejecuciones</h2><label for="machines">Máquina</label><select id="machines" onchange="loadExecutions()"></select><label for="executions">Grabaciones completadas</label><select id="executions" multiple onchange="showSelected()"></select><p>Las ejecuciones con fallo de audio o sin WAV no son candidatas de entrenamiento.</p></article>
-    <article class="card span-8 source-card"><h2>Fuente local</h2><p class="muted">Dataset local disponible para crear una importación reproducible.</p><div id="localDatasetInfo" class="metric">—</div><p id="localDatasetDetail" class="muted">Comprobando Dataset/Data...</p><button id="localImportButton" onclick="importLocalDataset()" disabled>Preparar Dataset/Data completo</button><div id="localImportResult"></div></article>
-    <article class="card span-12"><h2>2. Detalle de grabación</h2><div id="details" class="muted">Selecciona una ejecución.</div></article>
-    <article class="card span-5"><h2>3. Preparar grabación para entrenamiento</h2><p>Se copia el audio al workspace, se convierte a PCM16 estéreo 44,1 kHz y se crea un dataset reproducible con train, val y test.</p><button id="importButton" onclick="importSelected()" disabled>Preparar selección</button><div id="importResult"></div></article>
-    <article class="card span-7"><h2>4. Configuración y entrenamiento</h2><div id="importInfo" class="muted">Primero prepara al menos tres grabaciones.</div><div class="config-grid"><div class="config-group-title">Arquitectura</div><div><label for="model">Modelo</label><select id="model" onchange="updateConfigHelp()"><option value="cnn">CNN1D-VAE · recomendado</option><option value="lstm">LSTM-VAE · experimental</option></select></div><div><label for="sequenceLength">Duración de ventana</label><select id="sequenceLength" onchange="updateConfigHelp()"><option value="2048">2048 · 46 ms</option><option value="8192">8192 · 186 ms</option><option value="16384">16384 · 372 ms</option></select></div><div><label for="latentDim">Dimensión latente</label><select id="latentDim" onchange="updateConfigHelp()"><option value="8">8 · compacto</option><option value="16" selected>16 · recomendado</option><option value="32">32 · mayor capacidad</option></select></div><div><label for="device">Dispositivo</label><select id="device" onchange="updateConfigHelp()"><option value="auto" selected>Auto · CUDA si está disponible</option><option value="cuda">CUDA · obligatorio</option><option value="cpu">CPU</option></select></div><div class="config-group-title">Entrenamiento</div><div><label for="epochs">Épocas máximas</label><select id="epochs" onchange="updateConfigHelp()"><option value="20">20 · exploración</option><option value="40">40 · baseline</option><option value="60" selected>60 · recomendado</option><option value="100">100 · estudio</option><option value="120">120 · prolongado</option><option value="200">200 · experimental</option><option value="350">350 · investigación</option></select></div><div><label for="windows">Ventanas por grabación</label><select id="windows" onchange="updateConfigHelp()"><option value="16">16 · rápido</option><option value="64">64 · baseline</option><option value="128">128 · cobertura media</option><option value="300" selected>300 · recomendado</option><option value="600">600 · cobertura alta</option></select></div><div><label for="batchSize">Batch size</label><select id="batchSize" onchange="updateConfigHelp()"><option value="8" selected>8 · estable</option><option value="16">16 · más rendimiento</option><option value="32">32 · alta memoria</option></select></div><div><label for="learningRate">Learning rate</label><select id="learningRate" onchange="updateConfigHelp()"><option value="0.0003">0.0003 · conservador</option><option value="0.001" selected>0.001 · recomendado</option></select></div><div><label for="beta">Beta VAE</label><select id="beta" onchange="updateConfigHelp()"><option value="0.0001">0.0001 · reconstrucción</option><option value="0.001" selected>0.001 · recomendado</option><option value="0.01">0.01 · regularización</option></select></div><div><label for="evalEvery">Evaluar cada</label><select id="evalEvery" onchange="updateConfigHelp()"><option value="5">5 épocas · detallado</option><option value="10" selected>10 épocas · recomendado</option><option value="20">20 épocas · rápido</option></select></div></div><div id="configHelp" class="config-help"></div><button id="trainButton" onclick="startTraining()" disabled>Iniciar entrenamiento</button><div id="trainingResult"></div></article>
-    <article class="card span-12"><h2>Salida y progreso</h2><pre id="log">Esperando una operación.</pre></article>
-    <article id="resultCard" class="card span-12 hidden"><h2>Resultado visual del entrenamiento</h2><div id="resultSummary"></div><div id="trainingChart" class="chart"></div><div class="grid"><div class="card span-5"><h3>Scores por contexto</h3><div id="contextSummary"></div></div><div class="card span-7"><h3>Ventanas con mayor score</h3><div id="topWindows"></div></div></div></article>
-  </section>
+    <header>
+        <div class="header-copy">
+            <div class="eyebrow">Industrial audio intelligence · local control plane</div>
+            <h1>Machining Assistant</h1>
+            <p>Monitoriza el servicio, prepara grabaciones y entrena modelos VAE desde un único espacio de trabajo.</p>
+        </div>
+        <div class="status"><span id="dot" class="dot"></span><span id="statusText">Conectando...</span></div>
+    </header>
+    <section class="grid">
+        <article class="card span-4"><h2>Servicio</h2>
+            <div id="serviceMetric" class="metric">—</div>
+            <p id="serviceDetail" class="service-detail">Verificando API...</p>
+            <button class="secondary" onclick="refreshAll()">Actualizar estado</button>
+        </article>
+        <article class="card span-4"><h2>Persistencia</h2>
+            <div id="storageMetric" class="metric">—</div>
+            <p id="storageDetail" class="service-detail">Verificando PostgreSQL y Qdrant...</p></article>
+        <article class="card span-4 summary-card"><h2>Resumen operativo</h2>
+            <div id="summary" class="muted">Selecciona una máquina para consultar ejecuciones.</div>
+        </article>
+        <article class="card span-4">
+            <h2>1. Conexión y ejecuciones</h2>
+            <label for="machines">Máquina</label>
+            <select id="machines" onchange="loadExecutions()"></select>
+            <label for="executions">Grabaciones completadas</label>
+            <select id="executions" multiple onchange="showSelected()"></select>
+            <p>Las ejecuciones con fallo de audio o sin WAV no son candidatas de entrenamiento.</p>
+        </article>
+        <article class="card span-4 source-card"><h2>Fuente local</h2>
+            <p class="muted">Dataset local disponible para crear una importación reproducible.</p>
+            <div id="localDatasetInfo" class="metric">—</div>
+            <p id="localDatasetDetail" class="muted">Comprobando Dataset/Data...</p><label for="localRecording">Grabación
+                específica</label><select id="localRecording" onchange="showLocalRecording()">
+                <option value="">Cargando grabaciones...</option>
+            </select>
+            <p id="localRecordingDetail" class="muted">Selecciona una grabación para preparar un entrenamiento
+                especializado.</p>
+            <div class="config-grid">
+                <button id="singleLocalImportButton" onclick="importSingleLocalRecording()" disabled>Preparar grabación
+                    seleccionada
+                </button>
+                <button id="localImportButton" class="secondary" onclick="importLocalDataset()" disabled>Preparar
+                    Dataset/Data completo
+                </button>
+            </div>
+            <div id="localImportResult"></div>
+        </article>
+        <article class="card span-4"><h2>2. Detalle de grabación</h2>
+            <div id="details" class="muted">Selecciona una ejecución.</div>
+        </article>
+        <article class="card span-5"><h2>3. Preparar grabación para entrenamiento</h2>
+            <p>Se copia el audio al workspace, se convierte a PCM16 estéreo 44,1 kHz y se crea un dataset reproducible
+                con train, val y test.</p>
+            <button id="importButton" onclick="importSelected()" disabled>Preparar selección</button>
+            <div id="importResult"></div>
+        </article>
+        <article class="card span-7"><h2>Preset de configuración</h2>
+            <p class="muted">Selecciona un perfil cerrado para evitar combinaciones incompatibles. Puedes ajustar los
+                parámetros detallados en el panel de entrenamiento.</p><label for="configPreset">Perfil
+                recomendado</label><select id="configPreset" onchange="applyPreset()">
+                <option value="specialized" selected>Especializado · CNN 2048 · recomendado</option>
+                <option value="long">Contexto largo · CNN 8192</option>
+                <option value="conservative">Conservador · aprendizaje estable</option>
+            </select>
+            <div id="presetHelp" class="config-help">Para una sola grabación se recomienda el perfil Especializado.
+            </div>
+        </article>
+        <article class="card span-12"><h2>4. Configuración y entrenamiento</h2>
+            <div id="importInfo" class="muted">Primero prepara al menos tres grabaciones.</div>
+            <div class="config-grid">
+                <div class="config-group-title">Arquitectura</div>
+                <div><label for="model">Modelo</label><select id="model" onchange="updateConfigHelp()">
+                    <option value="cnn">CNN1D-VAE · recomendado</option>
+                    <option value="lstm">LSTM-VAE · experimental</option>
+                </select></div>
+                <div><label for="sequenceLength">Duración de ventana</label><select id="sequenceLength"
+                                                                                    onchange="updateConfigHelp()">
+                    <option value="2048">2048 · 46 ms</option>
+                    <option value="8192">8192 · 186 ms</option>
+                    <option value="16384">16384 · 372 ms</option>
+                </select></div>
+                <div><label for="latentDim">Dimensión latente</label><select id="latentDim"
+                                                                             onchange="updateConfigHelp()">
+                    <option value="8">8 · compacto</option>
+                    <option value="16" selected>16 · recomendado</option>
+                    <option value="32">32 · mayor capacidad</option>
+                </select></div>
+                <div><label for="device">Dispositivo</label><select id="device" onchange="updateConfigHelp()">
+                    <option value="auto" selected>Auto · CUDA si está disponible</option>
+                    <option value="cuda">CUDA · obligatorio</option>
+                    <option value="cpu">CPU</option>
+                </select></div>
+                <div class="config-group-title">Entrenamiento</div>
+                <div><label for="epochs">Épocas máximas</label><select id="epochs" onchange="updateConfigHelp()">
+                    <option value="20">20 · exploración</option>
+                    <option value="40">40 · baseline</option>
+                    <option value="60" selected>60 · recomendado</option>
+                    <option value="100">100 · estudio</option>
+                    <option value="120">120 · prolongado</option>
+                    <option value="200">200 · experimental</option>
+                    <option value="350">350 · investigación</option>
+                </select></div>
+                <div><label for="windows">Ventanas por grabación</label><select id="windows"
+                                                                                onchange="updateConfigHelp()">
+                    <option value="16">16 · rápido</option>
+                    <option value="64">64 · baseline</option>
+                    <option value="128">128 · cobertura media</option>
+                    <option value="300" selected>300 · recomendado</option>
+                    <option value="600">600 · cobertura alta</option>
+                </select></div>
+                <div><label for="batchSize">Batch size</label><select id="batchSize" onchange="updateConfigHelp()">
+                    <option value="8" selected>8 · estable</option>
+                    <option value="16">16 · más rendimiento</option>
+                    <option value="32">32 · alta memoria</option>
+                </select></div>
+                <div><label for="learningRate">Learning rate</label><select id="learningRate"
+                                                                            onchange="updateConfigHelp()">
+                    <option value="0.0003">0.0003 · conservador</option>
+                    <option value="0.001" selected>0.001 · recomendado</option>
+                </select></div>
+                <div><label for="beta">Beta VAE</label><select id="beta" onchange="updateConfigHelp()">
+                    <option value="0.0001">0.0001 · reconstrucción</option>
+                    <option value="0.001" selected>0.001 · recomendado</option>
+                    <option value="0.01">0.01 · regularización</option>
+                </select></div>
+                <div><label for="evalEvery">Evaluar cada</label><select id="evalEvery" onchange="updateConfigHelp()">
+                    <option value="5">5 épocas · detallado</option>
+                    <option value="10" selected>10 épocas · recomendado</option>
+                    <option value="20">20 épocas · rápido</option>
+                </select></div>
+            </div>
+            <div id="configHelp" class="config-help"></div>
+            <button id="trainButton" onclick="startTraining()" disabled>Iniciar entrenamiento</button>
+            <div id="trainingResult"></div>
+        </article>
+        <article class="card span-12">
+            <h2>Salida y progreso</h2>
+            <pre id="log">Esperando una operación.</pre>
+        </article>
+        <article id="resultCard" class="card span-12 hidden">
+            <h2>Resultado visual del entrenamiento</h2>
+            <div id="resultSummary"></div>
+            <div id="learningProgress"></div>
+            <div id="trainingChart" class="chart"></div>
+            <div class="grid">
+                <div class="card span-5"><h3>Scores por contexto</h3>
+                    <div id="contextSummary"></div>
+                </div>
+                <div class="card span-7"><h3>Ventanas con mayor score</h3>
+                    <div id="topWindows"></div>
+                </div>
+            </div>
+            <h3>Historial de aprendizaje</h3>
+            <div id="learningHistory" class="history-table muted">Cargando ejecuciones anteriores...</div>
+        </article>
+    </section>
 </main>
 <script>
-let executions=[]; let selectedImport=null; let pollTimer=null;
-const $=id=>document.getElementById(id);
-async function api(url, options){ const r=await fetch(url,options); const data=await r.json(); if(!r.ok) throw new Error(data.error||`HTTP ${r.status}`); return data; }
-function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
-async function refreshAll(){ try { const s=await api('/api/status'); $('dot').className='dot ok'; $('statusText').textContent=`API ${s.live.status}; ready ${s.ready?'OK':'protegido/no disponible'}`; $('serviceMetric').textContent=s.live.status==='alive'?'ONLINE':'—'; $('serviceDetail').textContent=`${s.service_url} · almacenamiento ${s.data_root}`; const local=await api('/api/local-dataset'); $('localDatasetInfo').textContent=local.recording_count; $('localDatasetDetail').textContent=`grabaciones válidas · ${local.source_group_count} grupos de adquisición · ${(local.duration_s/60).toFixed(1)} min`; $('localImportButton').disabled=local.recording_count<3; const m=await api('/api/machines'); $('machines').innerHTML=(m.machines||[]).map(id=>`<option value="${esc(id)}">${esc((m.machineNames||{})[id]||id)}</option>`).join(''); await loadExecutions(); } catch(e) { $('dot').className='dot'; $('statusText').textContent='Error'; $('serviceMetric').textContent='OFFLINE'; $('serviceDetail').textContent=e.message; $('log').textContent=e.stack||e.message; } }
-async function loadExecutions(){ const id=$('machines').value; if(!id)return; try { executions=await api('/api/executions?machine_id='+encodeURIComponent(id)); $('executions').innerHTML=executions.map((e,i)=>`<option value="${i}">${esc(e.executionId)} · ${esc(e.state)} · ${Number(e.durationSeconds||0).toFixed(1)} s ${e.training_candidate?'✓ candidata':''}</option>`).join(''); $('summary').innerHTML=`${executions.length} ejecuciones visibles. ${executions.filter(e=>e.training_candidate).length} candidatas de entrenamiento.`; showSelected(); } catch(e){$('log').textContent=e.message;} }
-function selected(){return [...$('executions').selectedOptions].map(o=>executions[Number(o.value)]);}
-async function showSelected(){ const list=selected(); $('importButton').disabled=list.length<3; if(!list.length){$('details').textContent='Selecciona una ejecución.';return;} const e=list[0]; $('details').innerHTML=`<table><tr><th>Execution</th><td>${esc(e.executionId)}</td></tr><tr><th>Estado</th><td>${esc(e.state)}</td></tr><tr><th>Duración</th><td>${Number(e.durationSeconds||0).toFixed(3)} s</td></tr><tr><th>Detalle</th><td>${esc(e.detail)}</td></tr><tr><th>Carpeta local</th><td>${esc(e.local_recording?.folder)}</td></tr><tr><th>Audio</th><td>${(e.local_recording?.audio||[]).map(a=>`${esc(a.name)} · ${a.sample_rate_hz} Hz · ${a.channels} ch · ${a.duration_s.toFixed(3)} s`).join('<br>')||'No disponible'}</td></tr></table>`; }
-async function importSelected(){ const ids=selected().map(e=>e.executionId); $('importButton').disabled=true; $('log').textContent='Preparando grabaciones...'; try { selectedImport=await api('/api/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({execution_ids:ids})}); $('importInfo').innerHTML=`Importación <span class="pill">${esc(selectedImport.job_id)}</span> lista con ${selectedImport.recordings.length} grabaciones.`; $('trainButton').disabled=false; $('importResult').innerHTML='<p class="ok">Preparación completada.</p>'; $('log').textContent=JSON.stringify(selectedImport,null,2); } catch(e){$('importResult').innerHTML=`<p class="bad">${esc(e.message)}</p>`; $('log').textContent=e.stack||e.message;} finally {$('importButton').disabled=ids.length<3;} }
-async function importLocalDataset(){ $('localImportButton').disabled=true; $('log').textContent='Preparando Dataset/Data...'; try { selectedImport=await api('/api/import-local',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}); $('importInfo').innerHTML=`Dataset local <span class="pill">${esc(selectedImport.job_id)}</span> listo con ${selectedImport.recordings.length} grabaciones.`; $('trainButton').disabled=false; $('localImportResult').innerHTML='<p class="ok">Dataset local preparado sin mezclarlo con la fuente del servicio.</p>'; $('log').textContent=JSON.stringify(selectedImport,null,2); } catch(e){$('localImportResult').innerHTML=`<p class="bad">${esc(e.message)}</p>`; $('log').textContent=e.stack||e.message;} finally {$('localImportButton').disabled=false;} }
-async function startTraining(){ if(!selectedImport)return; const payload={import_job_id:selectedImport.job_id,model:$('model').value,epochs:Number($('epochs').value),windows_per_recording:Number($('windows').value),sequence_length:Number($('sequenceLength').value),latent_dim:Number($('latentDim').value),batch_size:Number($('batchSize').value),learning_rate:Number($('learningRate').value),beta:Number($('beta').value),eval_every:Number($('evalEvery').value),device:$('device').value}; $('trainButton').disabled=true; try { const job=await api('/api/training/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); $('trainingResult').innerHTML=`<p>Entrenamiento <span class="pill">${esc(job.training_id)}</span> iniciado.</p>`; pollTimer=setInterval(()=>pollTraining(job.training_id),1500); await pollTraining(job.training_id); } catch(e){$('trainingResult').innerHTML=`<p class="bad">${esc(e.message)}</p>`; $('trainButton').disabled=false;} }
-async function pollTraining(id){ try { const job=await api('/api/training/status?training_id='+encodeURIComponent(id)); $('log').textContent=job.log_tail||JSON.stringify(job,null,2); if(job.status==='completed'||job.status==='failed'){clearInterval(pollTimer); $('trainButton').disabled=false; $('trainingResult').innerHTML+=`<p class="${job.status==='completed'?'ok':'bad'}">Estado final: ${esc(job.status)} (${esc(job.return_code)})</p><p>Artefactos: ${esc((job.artifacts||[]).join(', '))}</p>`; await loadTrainingResult(id);} } catch(e){$('log').textContent=e.message;} }
-function linePath(values,w,h,pad,max){ if(!values.length)return ''; const usableW=w-pad*2, usableH=h-pad*2; return values.map((v,i)=>`${i?'L':'M'} ${(pad+(values.length===1?0:i/(values.length-1))*usableW).toFixed(1)} ${(h-pad-(Number(v)/max)*usableH).toFixed(1)}`).join(' '); }
-function trainingSvg(history){ const w=900,h=280,pad=38; const points=history.filter(x=>x.validation_evaluated); const all=points.flatMap(x=>[x.train_reconstruction_loss,x.val_reconstruction_loss,x.test_reconstruction_loss]).filter(x=>Number.isFinite(x)); const max=Math.max(...all,1); const series=[['train_reconstruction_loss','#52d6bb'],['val_reconstruction_loss','#f4bd68'],['test_reconstruction_loss','#ff7d7d']]; const grid=[0,.25,.5,.75,1].map(v=>`<line x1="${pad}" x2="${w-pad}" y1="${h-pad-v*(h-pad*2)}" y2="${h-pad-v*(h-pad*2)}" stroke="#20323c"/><text x="5" y="${h-pad-v*(h-pad*2)+4}" fill="#9bb0b9" font-size="11">${(max*v).toFixed(2)}</text>`).join(''); const paths=series.map(([key,color])=>`<path d="${linePath(points.map(x=>x[key]),w,h,pad,max)}" fill="none" stroke="${color}" stroke-width="2.5"/>`).join(''); const labels=points.map((x,i)=>`<text x="${pad+(points.length===1?0:i/(points.length-1))*(w-pad*2)}" y="${h-10}" fill="#9bb0b9" font-size="11" text-anchor="middle">${x.epoch}</text>`).join(''); return `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="MSE por época">${grid}${paths}${labels}</svg><div class="legend"><span style="--legend:#52d6bb">Train</span><span style="--legend:#f4bd68">Validation</span><span style="--legend:#ff7d7d">Test</span></div>`; }
-function renderTrainingResult(result){ const r=result.report||{}; const best=Number(r.best_validation_reconstruction_mse); const test=Number(r.after?.test?.reconstruction_loss); const baseline=Number(result.baseline?.test); const improvement=baseline>0?((baseline-test)/baseline*100):NaN; $('resultCard').classList.remove('hidden'); $('resultSummary').innerHTML=`<div class="grid"><div class="card span-4"><div class="muted">Mejor época</div><div class="metric">${esc(result.best_epoch??'—')}</div></div><div class="card span-4"><div class="muted">Validation MSE mínimo</div><div class="metric">${Number.isFinite(best)?best.toFixed(4):'—'}</div></div><div class="card span-4"><div class="muted">Test vs baseline</div><div class="metric">${Number.isFinite(improvement)?improvement.toFixed(1)+'%':'—'}</div></div></div><p class="notice">${esc(result.score_reference_note||'')} Checkpoint seleccionado: <span class="pill">best.pt</span>. El test mostrado corresponde a los pesos finales.</p>`; $('trainingChart').innerHTML=trainingSvg(result.history||[]); const contexts=(result.context_counts||[]).slice(0,12); $('contextSummary').innerHTML=contexts.length?`<table><tr><th>Operación</th><th>Ventanas</th><th>Media</th><th>Máximo</th></tr>${contexts.map(x=>`<tr><td>${esc(x.operation)}</td><td>${x.windows}</td><td>${Number(x.mean_score).toFixed(3)}</td><td>${Number(x.max_score).toFixed(3)}</td></tr>`).join('')}</table>`:'<p class="muted">No hay contexto operativo disponible.</p>'; const top=(result.top_windows||[]).slice(0,20); $('topWindows').innerHTML=top.length?`<div class="scroll-table"><table><tr><th>Tiempo</th><th>Score</th><th>Operación</th><th>Herramienta</th><th>Eventos</th></tr>${top.map(x=>`<tr><td>${Number(x.start_s).toFixed(2)} s</td><td>${Number(x.score).toFixed(4)}${x.above_train_p99?' ⚠':''}</td><td>${esc(x.operation_context?.operation||'—')}</td><td>${esc(x.operation_context?.tool||'—')}</td><td>${x.events?.length||0}</td></tr>`).join('')}</table></div>`:'<p class="muted">No hay predicciones disponibles.</p>'; }
-async function loadTrainingResult(id){ try { const result=await api('/api/training/result?training_id='+encodeURIComponent(id)); renderTrainingResult(result); } catch(e){ $('resultCard').classList.remove('hidden'); $('resultSummary').innerHTML=`<p class="bad">No se pudo cargar el resultado visual: ${esc(e.message)}</p>`; } }
-function updateConfigHelp(){ const model=$('model').value, seq=Number($('sequenceLength').value), epochs=Number($('epochs').value), windows=Number($('windows').value), latent=Number($('latentDim').value), device=$('device').value, batch=Number($('batchSize').value), lr=Number($('learningRate').value), beta=Number($('beta').value), evalEvery=Number($('evalEvery').value); const seconds=(seq/44100*1000).toFixed(1); const modelText=model==='cnn'?'CNN1D-VAE procesa patrones locales del audio.':'LSTM-VAE procesa la evolución temporal de la señal.'; $('configHelp').innerHTML=`<strong>${modelText}</strong><br>Ventana: <strong>${seconds} ms</strong> · latente: <strong>${latent}</strong> dimensiones · épocas máximas: <strong>${epochs}</strong> · ventanas por grabación: <strong>${windows}</strong>.<br>Batch <strong>${batch}</strong>: ejemplos por actualización · learning rate <strong>${lr}</strong>: tamaño de paso · beta <strong>${beta}</strong>: regularización VAE · evaluación cada <strong>${evalEvery}</strong> épocas · dispositivo: <strong>${esc(device)}</strong>.`; }
-updateConfigHelp();
-refreshAll();
+    let executions = [];
+    let localRecordings = [];
+    let selectedImport = null;
+    let pollTimer = null;
+    const $ = id => document.getElementById(id);
+
+    async function api(url, options) {
+        const r = await fetch(url, options);
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+        return data;
+    }
+
+    function esc(v) {
+        return String(v ?? '').replace(/[&<>"']/g, c => ({
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#39;'
+        }[c]));
+    }
+
+    async function refreshAll() {
+        try {
+            const s = await api('/api/status');
+            $('dot').className = 'dot ok';
+            $('statusText').textContent = `API ${s.live.status}; ready ${s.ready ? 'OK' : 'protegido/no disponible'}`;
+            $('serviceMetric').textContent = s.live.status === 'alive' ? 'ONLINE' : '—';
+            $('serviceDetail').textContent = `${s.service_url} · almacenamiento ${s.data_root}`;
+            const local = await api('/api/local-dataset');
+            localRecordings = local.recordings || [];
+            $('localDatasetInfo').textContent = local.recording_count;
+            $('localDatasetDetail').textContent = `grabaciones válidas · ${local.source_group_count} grupos de adquisición · ${(local.duration_s / 60).toFixed(1)} min`;
+            $('localImportButton').disabled = local.recording_count < 3;
+            $('localRecording').innerHTML = localRecordings.map((item, i) => `<option value="${i}">${esc(item.folder)} · ${Number(item.duration_s).toFixed(1)} s</option>`).join('') || '<option value="">No hay grabaciones válidas</option>';
+            $('singleLocalImportButton').disabled = !localRecordings.length;
+            showLocalRecording();
+            const m = await api('/api/machines');
+            $('machines').innerHTML = (m.machines || []).map(id => `<option value="${esc(id)}">${esc((m.machineNames || {})[id] || id)}</option>`).join('');
+            await loadExecutions();
+        } catch (e) {
+            $('dot').className = 'dot';
+            $('statusText').textContent = 'Error';
+            $('serviceMetric').textContent = 'OFFLINE';
+            $('serviceDetail').textContent = e.message;
+            $('log').textContent = e.stack || e.message;
+        }
+    }
+
+    async function loadExecutions() {
+        const id = $('machines').value;
+        if (!id) return;
+        try {
+            executions = await api('/api/executions?machine_id=' + encodeURIComponent(id));
+            $('executions').innerHTML = executions.map((e, i) => `<option value="${i}">${esc(e.executionId)} · ${esc(e.state)} · ${Number(e.durationSeconds || 0).toFixed(1)} s ${e.training_candidate ? '✓ candidata' : ''}</option>`).join('');
+            $('summary').innerHTML = `${executions.length} ejecuciones visibles. ${executions.filter(e => e.training_candidate).length} candidatas de entrenamiento.`;
+            showSelected();
+        } catch (e) {
+            $('log').textContent = e.message;
+        }
+    }
+
+    function selected() {
+        return [...$('executions').selectedOptions].map(o => executions[Number(o.value)]);
+    }
+
+    const showServiceSelected = showSelected;
+    showSelected = async function () {
+        await showServiceSelected();
+        if (!selected().length && localRecordings[Number($('localRecording').value)]) showLocalRecording();
+    };
+
+    async function showSelected() {
+        const list = selected();
+        $('importButton').disabled = list.length < 3;
+        if (!list.length) {
+            $('details').textContent = 'Selecciona una ejecución.';
+            return;
+        }
+        const e = list[0];
+        $('details').innerHTML = `<table><tr><th>Execution</th><td>${esc(e.executionId)}</td></tr><tr><th>Estado</th><td>${esc(e.state)}</td></tr><tr><th>Duración</th><td>${Number(e.durationSeconds || 0).toFixed(3)} s</td></tr><tr><th>Detalle</th><td>${esc(e.detail)}</td></tr><tr><th>Carpeta local</th><td>${esc(e.local_recording?.folder)}</td></tr><tr><th>Audio</th><td>${(e.local_recording?.audio || []).map(a => `${esc(a.name)} · ${a.sample_rate_hz} Hz · ${a.channels} ch · ${a.duration_s.toFixed(3)} s`).join('<br>') || 'No disponible'}</td></tr></table>`;
+    }
+
+    async function importSelected() {
+        const ids = selected().map(e => e.executionId);
+        $('importButton').disabled = true;
+        $('log').textContent = 'Preparando grabaciones...';
+        try {
+            selectedImport = await api('/api/import', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({execution_ids: ids})
+            });
+            $('importInfo').innerHTML = `Importación <span class="pill">${esc(selectedImport.job_id)}</span> lista con ${selectedImport.recordings.length} grabaciones.`;
+            $('trainButton').disabled = false;
+            $('importResult').innerHTML = '<p class="ok">Preparación completada.</p>';
+            $('log').textContent = JSON.stringify(selectedImport, null, 2);
+        } catch (e) {
+            $('importResult').innerHTML = `<p class="bad">${esc(e.message)}</p>`;
+            $('log').textContent = e.stack || e.message;
+        } finally {
+            $('importButton').disabled = ids.length < 3;
+        }
+    }
+
+    function showLocalRecording() {
+        const index = Number($('localRecording').value);
+        const item = localRecordings[index];
+        if (!item) {
+            $('localRecordingDetail').textContent = 'Selecciona una grabación válida.';
+            return;
+        }
+        $('localRecordingDetail').textContent = `${Number(item.duration_s).toFixed(1)} s · ${item.sample_rate_hz} Hz · ${item.channels} canales · grupo ${item.source_group} · ${item.recording_id}`;
+        $('details').innerHTML = `<table><tr><th>Fuente</th><td>Dataset/Data local</td></tr><tr><th>Carpeta</th><td>${esc(item.folder)}</td></tr><tr><th>Recording ID</th><td>${esc(item.recording_id)}</td></tr><tr><th>Grupo de adquisición</th><td>${esc(item.source_group)}</td></tr><tr><th>Duración</th><td>${Number(item.duration_s).toFixed(3)} s</td></tr><tr><th>Audio</th><td>${item.sample_rate_hz} Hz · ${item.channels} canales · WAV local</td></tr></table><p class="notice">Grabación local seleccionada para entrenamiento especializado. Al prepararla se dividirá temporalmente en train, validation y test.</p>`;
+    }
+
+    async function importSingleLocalRecording() {
+        const item = localRecordings[Number($('localRecording').value)];
+        if (!item) return;
+        $('singleLocalImportButton').disabled = true;
+        $('log').textContent = 'Preparando segmentos temporales de la grabación seleccionada...';
+        try {
+            selectedImport = await api('/api/import-local-recording', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({folder: item.folder})
+            });
+            $('importInfo').innerHTML = `Entrenamiento especializado <span class="pill">${esc(selectedImport.job_id)}</span> listo: 70% train · 15% val · 15% test.`;
+            $('trainButton').disabled = false;
+            $('localImportResult').innerHTML = '<p class="ok">Grabación seleccionada preparada. La validación es temporal dentro de la misma sesión.</p>';
+            $('log').textContent = JSON.stringify(selectedImport, null, 2);
+        } catch (e) {
+            $('localImportResult').innerHTML = `<p class="bad">${esc(e.message)}</p>`;
+            $('log').textContent = e.stack || e.message;
+        } finally {
+            $('singleLocalImportButton').disabled = !localRecordings.length;
+        }
+    }
+
+    async function importLocalDataset() {
+        $('localImportButton').disabled = true;
+        $('log').textContent = 'Preparando Dataset/Data...';
+        try {
+            selectedImport = await api('/api/import-local', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: '{}'
+            });
+            $('importInfo').innerHTML = `Dataset local <span class="pill">${esc(selectedImport.job_id)}</span> listo con ${selectedImport.recordings.length} grabaciones.`;
+            $('trainButton').disabled = false;
+            $('localImportResult').innerHTML = '<p class="ok">Dataset local preparado sin mezclarlo con la fuente del servicio.</p>';
+            $('log').textContent = JSON.stringify(selectedImport, null, 2);
+        } catch (e) {
+            $('localImportResult').innerHTML = `<p class="bad">${esc(e.message)}</p>`;
+            $('log').textContent = e.stack || e.message;
+        } finally {
+            $('localImportButton').disabled = false;
+        }
+    }
+
+    async function startTraining() {
+        if (!selectedImport) return;
+        const payload = {
+            import_job_id: selectedImport.job_id,
+            model: $('model').value,
+            epochs: Number($('epochs').value),
+            windows_per_recording: Number($('windows').value),
+            sequence_length: Number($('sequenceLength').value),
+            latent_dim: Number($('latentDim').value),
+            batch_size: Number($('batchSize').value),
+            learning_rate: Number($('learningRate').value),
+            beta: Number($('beta').value),
+            eval_every: Number($('evalEvery').value),
+            device: $('device').value
+        };
+        $('trainButton').disabled = true;
+        try {
+            const job = await api('/api/training/start', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            });
+            $('trainingResult').innerHTML = `<p>Entrenamiento <span class="pill">${esc(job.training_id)}</span> iniciado.</p>`;
+            pollTimer = setInterval(() => pollTraining(job.training_id), 1500);
+            await pollTraining(job.training_id);
+        } catch (e) {
+            $('trainingResult').innerHTML = `<p class="bad">${esc(e.message)}</p>`;
+            $('trainButton').disabled = false;
+        }
+    }
+
+    async function pollTraining(id) {
+        try {
+            const job = await api('/api/training/status?training_id=' + encodeURIComponent(id));
+            $('log').textContent = job.log_tail || JSON.stringify(job, null, 2);
+            if (job.status === 'completed' || job.status === 'failed') {
+                clearInterval(pollTimer);
+                $('trainButton').disabled = false;
+                $('trainingResult').innerHTML += `<p class="${job.status === 'completed' ? 'ok' : 'bad'}">Estado final: ${esc(job.status)} (${esc(job.return_code)})</p><p>Artefactos: ${esc((job.artifacts || []).join(', '))}</p>`;
+                await loadTrainingResult(id);
+            }
+        } catch (e) {
+            $('log').textContent = e.message;
+        }
+    }
+
+    function linePath(values, w, h, pad, max) {
+        if (!values.length) return '';
+        const usableW = w - pad * 2, usableH = h - pad * 2;
+        return values.map((v, i) => `${i ? 'L' : 'M'} ${(pad + (values.length === 1 ? 0 : i / (values.length - 1)) * usableW).toFixed(1)} ${(h - pad - (Number(v) / max) * usableH).toFixed(1)}`).join(' ');
+    }
+
+    function trainingSvg(history) {
+        const w = 900, h = 280, pad = 38;
+        const points = history.filter(x => x.validation_evaluated);
+        const all = points.flatMap(x => [x.train_reconstruction_loss, x.val_reconstruction_loss, x.test_reconstruction_loss]).filter(x => Number.isFinite(x));
+        const max = Math.max(...all, 1);
+        const series = [['train_reconstruction_loss', '#52d6bb'], ['val_reconstruction_loss', '#f4bd68'], ['test_reconstruction_loss', '#ff7d7d']];
+        const grid = [0, .25, .5, .75, 1].map(v => `<line x1="${pad}" x2="${w - pad}" y1="${h - pad - v * (h - pad * 2)}" y2="${h - pad - v * (h - pad * 2)}" stroke="#20323c"/><text x="5" y="${h - pad - v * (h - pad * 2) + 4}" fill="#9bb0b9" font-size="11">${(max * v).toFixed(2)}</text>`).join('');
+        const paths = series.map(([key, color]) => `<path d="${linePath(points.map(x => x[key]), w, h, pad, max)}" fill="none" stroke="${color}" stroke-width="2.5"/>`).join('');
+        const labels = points.map((x, i) => `<text x="${pad + (points.length === 1 ? 0 : i / (points.length - 1)) * (w - pad * 2)}" y="${h - 10}" fill="#9bb0b9" font-size="11" text-anchor="middle">${x.epoch}</text>`).join('');
+        return `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="MSE por época">${grid}${paths}${labels}</svg><div class="legend"><span style="--legend:#52d6bb">Train</span><span style="--legend:#f4bd68">Validation</span><span style="--legend:#ff7d7d">Test</span></div>`;
+    }
+
+    function learningBar(label, value, note, warn = false) {
+        const percent = Number.isFinite(Number(value)) ? Math.max(0, Math.min(100, Number(value))) : 0;
+        return `<div class="learning-item"><div class="muted">${esc(label)}</div><div class="metric">${Number.isFinite(Number(value)) ? percent.toFixed(1) + '%' : '—'}</div><div class="progress-track"><div class="progress-fill${warn ? ' warn' : ''}" style="width:${percent.toFixed(2)}%"></div></div><small class="muted">${esc(note)}</small></div>`;
+    }
+
+    function renderLearningProgress(statistics) {
+        const s = statistics || {};
+        const gap = Number(s.generalization_gap_percent);
+        const gapNote = Number.isFinite(gap) ? `Diferencia validation/train: ${gap.toFixed(1)}%` : 'Sin diferencia disponible';
+        $('learningProgress').innerHTML = `<h3>Porcentaje de aprendizaje de esta ejecución</h3><div class="learning-grid">${learningBar('Aprendizaje global', s.learning_percent, '40% train + 60% validation')} ${learningBar('Generalización', s.validation_improvement_percent, 'Mejora relativa en validation')} ${learningBar('Progreso hasta mejor época', s.epoch_progress_percent, `Mejor época: ${s.best_epoch ?? '—'} de ${s.completed_epoch ?? '—'}`)}</div><p class="notice">${esc(s.interpretation || 'Indicador relativo de reducción del error; no es accuracy.')}${Number.isFinite(gap) && gap > 50 ? ` ${esc(gapNote)} Posible sobreajuste.` : ''}</p>`;
+    }
+
+    async function loadLearningHistory(currentId) {
+        try {
+            const data = await api('/api/training/history?limit=50');
+            const runs = data.runs || [];
+            $('learningHistory').innerHTML = runs.length ? `<table><tr><th>Fecha</th><th>Modelo</th><th>Aprendizaje</th><th>Validation</th><th>Mejor época</th></tr>${runs.map(item => { const s = item.learning || {}; const current = item.training_id === currentId ? ' class="current"' : ''; return `<tr${current}><td>${esc(item.created_at || '—')}</td><td>${esc(item.model || '—')}</td><td>${Number.isFinite(Number(s.learning_percent)) ? Number(s.learning_percent).toFixed(1) + '%' : '—'}</td><td>${Number.isFinite(Number(s.validation_improvement_percent)) ? Number(s.validation_improvement_percent).toFixed(1) + '%' : '—'}</td><td>${esc(s.best_epoch ?? '—')}</td></tr>`; }).join('')}</table>` : '<p class="muted">Todavía no hay ejecuciones persistidas.</p>';
+        } catch (e) {
+            $('learningHistory').innerHTML = `<p class="bad">No se pudo cargar el historial: ${esc(e.message)}</p>`;
+        }
+    }
+
+    function renderTrainingResult(result) {
+        const r = result.report || {};
+        const best = Number(r.best_validation_reconstruction_mse);
+        const test = Number(r.after?.test?.reconstruction_loss);
+        const baseline = Number(result.baseline?.test);
+        const improvement = baseline > 0 ? ((baseline - test) / baseline * 100) : NaN;
+        $('resultCard').classList.remove('hidden');
+        $('resultSummary').innerHTML = `<div class="grid"><div class="card span-4"><div class="muted">Mejor época</div><div class="metric">${esc(result.best_epoch ?? '—')}</div></div><div class="card span-4"><div class="muted">Validation MSE mínimo</div><div class="metric">${Number.isFinite(best) ? best.toFixed(4) : '—'}</div></div><div class="card span-4"><div class="muted">Test vs baseline</div><div class="metric">${Number.isFinite(improvement) ? improvement.toFixed(1) + '%' : '—'}</div></div></div><p class="notice">${esc(result.score_reference_note || '')} Checkpoint seleccionado: <span class="pill">best.pt</span>. El test mostrado corresponde a los pesos finales.</p>`;
+        renderLearningProgress(result.learning_statistics);
+        loadLearningHistory(result.report?.training_id || result.training_id);
+        $('trainingChart').innerHTML = trainingSvg(result.history || []);
+        const contexts = (result.context_counts || []).slice(0, 12);
+        $('contextSummary').innerHTML = contexts.length ? `<table><tr><th>Operación</th><th>Ventanas</th><th>Media</th><th>Máximo</th></tr>${contexts.map(x => `<tr><td>${esc(x.operation)}</td><td>${x.windows}</td><td>${Number(x.mean_score).toFixed(3)}</td><td>${Number(x.max_score).toFixed(3)}</td></tr>`).join('')}</table>` : '<p class="muted">No hay contexto operativo disponible.</p>';
+        const top = (result.top_windows || []).slice(0, 20);
+        $('topWindows').innerHTML = top.length ? `<div class="scroll-table"><table><tr><th>Tiempo</th><th>Score</th><th>Operación</th><th>Herramienta</th><th>Eventos</th></tr>${top.map(x => `<tr><td>${Number(x.start_s).toFixed(2)} s</td><td>${Number(x.score).toFixed(4)}${x.above_train_p99 ? ' ⚠' : ''}</td><td>${esc(x.operation_context?.operation || '—')}</td><td>${esc(x.operation_context?.tool || '—')}</td><td>${x.events?.length || 0}</td></tr>`).join('')}</table></div>` : '<p class="muted">No hay predicciones disponibles.</p>';
+    }
+
+    async function loadTrainingResult(id) {
+        try {
+            const result = await api('/api/training/result?training_id=' + encodeURIComponent(id));
+            result.training_id = id;
+            renderTrainingResult(result);
+        } catch (e) {
+            $('resultCard').classList.remove('hidden');
+            $('resultSummary').innerHTML = `<p class="bad">No se pudo cargar el resultado visual: ${esc(e.message)}</p>`;
+        }
+    }
+
+    function applyPreset() {
+        const presets = {
+            specialized: {
+                model: 'cnn',
+                sequenceLength: '2048',
+                latentDim: '16',
+                device: 'auto',
+                epochs: '60',
+                windows: '300',
+                batchSize: '8',
+                learningRate: '0.001',
+                beta: '0.001',
+                evalEvery: '10',
+                help: 'CNN1D-VAE con ventana corta: recomendado para aprender patrones locales de una grabación.'
+            },
+            long: {
+                model: 'cnn',
+                sequenceLength: '8192',
+                latentDim: '16',
+                device: 'auto',
+                epochs: '60',
+                windows: '128',
+                batchSize: '8',
+                learningRate: '0.001',
+                beta: '0.001',
+                evalEvery: '10',
+                help: 'Ventana larga: captura contexto temporal mayor, pero necesita más memoria y puede reducir la cantidad útil de ventanas.'
+            },
+            conservative: {
+                model: 'cnn',
+                sequenceLength: '2048',
+                latentDim: '8',
+                device: 'auto',
+                epochs: '40',
+                windows: '128',
+                batchSize: '8',
+                learningRate: '0.0003',
+                beta: '0.001',
+                evalEvery: '5',
+                help: 'Perfil conservador: menor capacidad y pasos más pequeños para una primera prueba estable.'
+            }
+        };
+        const p = presets[$('configPreset').value] || presets.specialized;
+        Object.entries(p).forEach(([key, value]) => {
+            if ($(key)) $(key).value = value;
+        });
+        $('presetHelp').textContent = p.help;
+        updateConfigHelp();
+    }
+
+    function updateConfigHelp() {
+        const model = $('model').value, seq = Number($('sequenceLength').value), epochs = Number($('epochs').value),
+            windows = Number($('windows').value), latent = Number($('latentDim').value), device = $('device').value,
+            batch = Number($('batchSize').value), lr = Number($('learningRate').value), beta = Number($('beta').value),
+            evalEvery = Number($('evalEvery').value);
+        const seconds = (seq / 44100 * 1000).toFixed(1);
+        const modelText = model === 'cnn' ? 'CNN1D-VAE procesa patrones locales del audio.' : 'LSTM-VAE procesa la evolución temporal de la señal.';
+        $('configHelp').innerHTML = `<strong>${modelText}</strong><br>Ventana: <strong>${seconds} ms</strong> · latente: <strong>${latent}</strong> dimensiones · épocas máximas: <strong>${epochs}</strong> · ventanas por grabación: <strong>${windows}</strong>.<br>Batch <strong>${batch}</strong>: ejemplos por actualización · learning rate <strong>${lr}</strong>: tamaño de paso · beta <strong>${beta}</strong>: regularización VAE · evaluación cada <strong>${evalEvery}</strong> épocas · dispositivo: <strong>${esc(device)}</strong>.`;
+    }
+
+    async function loadStorageHealth() {
+        try {
+            const s = await api('/api/storage/health');
+            const pg = s.postgres?.ok, q = s.qdrant?.ok;
+            $('storageMetric').textContent = pg && q ? 'READY' : 'PARTIAL';
+            $('storageMetric').className = `metric ${pg && q ? 'ok' : 'warn'}`;
+            $('storageDetail').textContent = `PostgreSQL: ${pg ? 'OK' : 'ERROR'} · Qdrant: ${q ? 'OK' : 'ERROR'}`;
+        } catch (e) {
+            $('storageMetric').textContent = 'OFFLINE';
+            $('storageMetric').className = 'metric bad';
+            $('storageDetail').textContent = e.message;
+        }
+    }
+
+    const refreshService = refreshAll;
+    refreshAll = async function () {
+        await refreshService();
+        await loadStorageHealth();
+    };
+    applyPreset();
+    $('importInfo').textContent = 'Prepara una grabación específica o el dataset completo para habilitar el entrenamiento.';
+    refreshAll();
 </script>
 </body>
 </html>

@@ -23,6 +23,10 @@ from urllib.parse import parse_qs, urlparse
 import uuid
 import wave
 
+from persistence import health as storage_health
+from persistence import persist_import, persist_training
+from persistence import training_history as storage_training_history
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 WEB_ROOT = PROJECT_ROOT / "web_monitor"
@@ -330,6 +334,83 @@ def import_local_dataset(sample_rate: int = 44100) -> dict:
         raise
 
 
+def import_one_local_recording(folder_name: str, sample_rate: int = 44100) -> dict:
+    """Create a specialized temporal train/val/test dataset from one local WAV."""
+    if sample_rate != 44100:
+        raise ValueError("La primera versión del entrenamiento requiere 44100 Hz")
+    item = next((value for value in local_dataset_inventory()["recordings"] if value["folder"] == folder_name), None)
+    if item is None:
+        raise FileNotFoundError("La grabación local seleccionada no existe o no contiene un WAV válido")
+    source_dir = LOCAL_DATA_ROOT / folder_name
+    source_wav = sorted(source_dir.glob("audio_*.wav"))[0]
+    duration = float(item["duration_s"])
+    if duration < 1.0:
+        raise ValueError("La grabación es demasiado corta para crear tres segmentos temporales")
+    boundaries = {
+        "train": (0.0, duration * 0.70),
+        "val": (duration * 0.70, duration * 0.85),
+        "test": (duration * 0.85, duration),
+    }
+    job_id = time.strftime("%Y%m%d_%H%M%S") + "_single_" + uuid.uuid4().hex[:8]
+    root = RUNS_ROOT / job_id
+    data_dir = root / "data"
+    root.mkdir(parents=True, exist_ok=False)
+    rows = []
+    imported = []
+    try:
+        source_metadata = _read_json_file(source_dir / "metadata.json", {})
+        base_id = item["recording_id"]
+        for split, (start_s, end_s) in boundaries.items():
+            recording_id = f"{base_id}-{split}"
+            target_dir = data_dir / recording_id
+            target_dir.mkdir(parents=True)
+            target_wav = target_dir / "audio_000000.wav"
+            command = [
+                FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+                "-i", str(source_wav), "-ss", f"{start_s:.6f}", "-t", f"{end_s - start_s:.6f}",
+                "-ac", "2", "-ar", str(sample_rate), "-c:a", "pcm_s16le", str(target_wav),
+            ]
+            completed = subprocess.run(command, capture_output=True, text=True, timeout=600, check=False)
+            if completed.returncode != 0 or not target_wav.is_file():
+                raise RuntimeError(f"FFmpeg no pudo preparar el segmento {split}: {completed.stderr[-500:]}")
+            metadata = dict(source_metadata)
+            metadata.pop("SourceRecording", None)
+            metadata["ExecutionId"] = recording_id
+            metadata["SpecializedSourceRecording"] = {
+                "folder": folder_name,
+                "recording_id": base_id,
+                "split": split,
+                "start_seconds": start_s,
+                "end_seconds": end_s,
+                "split_policy": "70/15/15 temporal; no es una validacion independiente por grabacion",
+            }
+            (target_dir / "metadata.json").write_bytes(json_bytes(metadata))
+            rows.append({"recording_id": recording_id, "source_recording_id": recording_id, "split": split})
+            imported.append({
+                "source_folder": folder_name, "recording_id": recording_id, "split": split,
+                "start_seconds": start_s, "end_seconds": end_s,
+                "wav": str(target_wav), "wav_info": wav_info(target_wav),
+            })
+        split_csv = root / "dataset_splits.csv"
+        write_split_csv(split_csv, rows)
+        manifest = {
+            "job_id": job_id,
+            "source": "Dataset/Data/single_recording",
+            "source_root": str(LOCAL_DATA_ROOT),
+            "source_folder": folder_name,
+            "source_recording_id": base_id,
+            "temporal_split": {"train": 0.70, "val": 0.15, "test": 0.15},
+            "validation_note": "Train, validation y test son segmentos de una misma grabacion; no representan generalizacion entre sesiones.",
+            "sample_rate_hz": sample_rate,
+            "data_dir": str(data_dir), "split_csv": str(split_csv), "recordings": imported,
+        }
+        (root / "import_manifest.json").write_bytes(json_bytes(manifest))
+        return manifest
+    except Exception:
+        shutil.rmtree(root, ignore_errors=True)
+        raise
+
+
 def import_recordings(execution_ids: list[str], sample_rate: int = 44100) -> dict:
     if len(execution_ids) < 3:
         raise ValueError("Seleccione al menos tres grabaciones completas para train, val y test")
@@ -390,6 +471,14 @@ def import_recordings(execution_ids: list[str], sample_rate: int = 44100) -> dic
         raise
 
 
+def _persist_import_best_effort(manifest: dict) -> dict:
+    try:
+        manifest["persistence"] = persist_import(manifest)
+    except Exception as exc:
+        manifest["persistence"] = {"ok": False, "error": str(exc)}
+    return manifest
+
+
 def train_worker(job_id: str, args: list[str], output_dir: Path) -> None:
     # The trainer requires its output directory to be empty at startup. Keep
     # the monitor log beside that directory, never inside it.
@@ -408,6 +497,8 @@ def train_worker(job_id: str, args: list[str], output_dir: Path) -> None:
         return_code = process.wait()
     with _jobs_lock:
         _jobs[job_id].update({"status": "completed" if return_code == 0 else "failed", "return_code": return_code, "finished_at": time.time()})
+    if return_code == 0:
+        _persist_completed_training(job_id, output_dir)
 
 
 def _read_json_file(path: Path, default):
@@ -446,6 +537,78 @@ def _context_at(context_doc: dict, metadata: dict, timestamp_s: float) -> dict:
         "rpm": spindle.get("AdjustedRpm") or spindle.get("ProgrammedRpm"),
         "feed_rate": feed.get("AdjustedMmPerMin") or feed.get("ProgrammedMmPerMin"),
         "context_timestamp_s": selected.get("timestamp_seconds") if selected else None,
+    }
+
+
+def _learning_statistics(report: dict) -> dict:
+    """Return a comparable 0-100 learning indicator for one VAE run."""
+    def number(value):
+        try:
+            value = float(value)
+            return value if math.isfinite(value) else None
+        except (TypeError, ValueError):
+            return None
+
+    def nested(section: str, key: str):
+        value = report.get(section, {})
+        return number(value.get(key)) if isinstance(value, dict) else None
+
+    history = report.get("history", [])
+    best_epoch = int(report.get("best_epoch") or 0)
+    evaluated = [
+        item for item in history
+        if isinstance(item, dict) and item.get("validation_evaluated")
+        and number(item.get("val_reconstruction_loss")) is not None
+    ]
+    best = next((item for item in evaluated if int(item.get("epoch") or 0) == best_epoch), None)
+    if best is None and evaluated:
+        best = min(evaluated, key=lambda item: float(item["val_reconstruction_loss"]))
+        best_epoch = int(best.get("epoch") or 0)
+    first_train = next((number(item.get("train_reconstruction_loss")) for item in history if isinstance(item, dict) and number(item.get("train_reconstruction_loss")) is not None), None)
+    before = report.get("before", {})
+    baseline_train = (number(before.get("train", {}).get("reconstruction_loss"))
+                      if isinstance(before, dict) and isinstance(before.get("train"), dict) else None) or first_train
+    baseline_val = (number(before.get("val", {}).get("reconstruction_loss"))
+                    if isinstance(before, dict) and isinstance(before.get("val"), dict) else None)
+    current_train = number(best.get("train_reconstruction_loss")) if best else (
+        number(report.get("after", {}).get("train", {}).get("reconstruction_loss"))
+        if isinstance(report.get("after"), dict) and isinstance(report.get("after", {}).get("train"), dict) else None
+    )
+    current_val = number(best.get("val_reconstruction_loss")) if best else (
+        number(report.get("after", {}).get("val", {}).get("reconstruction_loss"))
+        if isinstance(report.get("after"), dict) and isinstance(report.get("after", {}).get("val"), dict) else None
+    )
+
+    def improvement(baseline, current):
+        if baseline is None or current is None or baseline <= 0:
+            return None
+        return max(0.0, min(100.0, (1.0 - current / baseline) * 100.0))
+
+    train_percent = improvement(baseline_train, current_train)
+    validation_percent = improvement(baseline_val, current_val)
+    components = [value for value in (train_percent, validation_percent) if value is not None]
+    if train_percent is not None and validation_percent is not None:
+        global_percent = train_percent * 0.4 + validation_percent * 0.6
+    else:
+        global_percent = components[0] if components else 0.0
+    gap = None
+    if current_train is not None and current_val is not None and current_train > 0:
+        gap = max(0.0, (current_val - current_train) / current_train * 100.0)
+    epochs = int(report.get("epochs") or (history[-1].get("epoch", 0) if history else 0))
+    return {
+        "learning_percent": round(global_percent, 2),
+        "train_improvement_percent": round(train_percent, 2) if train_percent is not None else None,
+        "validation_improvement_percent": round(validation_percent, 2) if validation_percent is not None else None,
+        "epoch_progress_percent": round(max(0.0, min(100.0, best_epoch / epochs * 100.0)), 2) if epochs else 0.0,
+        "generalization_gap_percent": round(gap, 2) if gap is not None else None,
+        "best_epoch": best_epoch,
+        "completed_epoch": epochs,
+        "baseline_train_mse": baseline_train,
+        "best_train_mse": current_train,
+        "baseline_validation_mse": baseline_val,
+        "best_validation_mse": current_val,
+        "formula": "0.4 * train_improvement + 0.6 * validation_improvement; capped to 0-100",
+        "interpretation": "Indicador relativo de reducción del error; no es accuracy ni porcentaje de detección.",
     }
 
 
@@ -508,7 +671,12 @@ def _training_result(output_dir: Path) -> dict:
                     "operation_context": _context_at(context_doc, metadata, context_time_s),
                     "events": overlap_events,
                     "playback_offset_ms": playback_offset_ms,
-                    "source_start_seconds": (metadata.get("SourceRecording") or {}).get("StartSeconds") if isinstance(metadata.get("SourceRecording"), dict) else None,
+                    "source_start_seconds": (
+                        (metadata.get("SourceRecording") or {}).get("StartSeconds")
+                        if isinstance(metadata.get("SourceRecording"), dict)
+                        else ((metadata.get("SpecializedSourceRecording") or {}).get("start_seconds")
+                              if isinstance(metadata.get("SpecializedSourceRecording"), dict) else None)
+                    ),
                     "recording_start": metadata.get("StartTime"),
                 }
                 rows.append(enriched)
@@ -529,6 +697,7 @@ def _training_result(output_dir: Path) -> dict:
         bucket["mean_score"] /= bucket["windows"]
     return {
         "report": report,
+        "learning_statistics": _learning_statistics(report),
         "history": report.get("history", []),
         "baseline": report.get("mean_reconstruction_baseline_mse", {}),
         "best_epoch": report.get("best_epoch"),
@@ -539,6 +708,29 @@ def _training_result(output_dir: Path) -> dict:
         "top_windows": top_windows,
         "window_count": len(finite_rows),
     }
+
+
+def _persist_completed_training(training_id: str, output_dir: Path) -> None:
+    """Persist a completed run without turning storage outages into train failures."""
+    with _jobs_lock:
+        job = dict(_jobs.get(training_id, {}))
+    persistence_state: dict[str, object] = {}
+    try:
+        result = _training_result(output_dir)
+        configuration = job.get("configuration", {})
+        model = str(job.get("model", "cnn"))
+        manifest = _read_json_file(output_dir.parent.parent / "import_manifest.json", {})
+        data_dir = Path(manifest.get("data_dir", ""))
+        from vector_index import index_training
+
+        windows, vector_state = index_training(training_id, output_dir, data_dir, model, configuration)
+        persistence_state["qdrant"] = vector_state
+        persistence_state["postgres"] = persist_training(training_id, job, result, windows)["ok"]
+    except Exception as exc:
+        persistence_state["ok"] = False
+        persistence_state["error"] = str(exc)
+    with _jobs_lock:
+        _jobs.setdefault(training_id, {})["persistence"] = persistence_state
 
 
 def start_training(payload: dict) -> dict:
@@ -644,6 +836,9 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/local-dataset":
                 self.send_json(local_dataset_inventory())
                 return
+            if parsed.path == "/api/storage/health":
+                self.send_json(storage_health())
+                return
             if parsed.path == "/api/executions":
                 machine_id = parse_qs(parsed.query).get("machine_id", [""])[0]
                 if not machine_id:
@@ -687,6 +882,13 @@ class Handler(BaseHTTPRequestHandler):
                     raise FileNotFoundError("No existe el directorio del entrenamiento")
                 self.send_json(_training_result(output_dir))
                 return
+            if parsed.path == "/api/training/history":
+                try:
+                    limit = int(parse_qs(parsed.query).get("limit", ["50"])[0])
+                    self.send_json({"ok": True, "runs": storage_training_history(limit)})
+                except Exception as exc:
+                    self.send_json({"ok": False, "runs": [], "error": str(exc)})
+                return
             self.send_json({"error": "not_found"}, 404)
         except Exception as exc:
             self.send_json({"error": str(exc)}, 400)
@@ -699,10 +901,16 @@ class Handler(BaseHTTPRequestHandler):
                 ids = payload.get("execution_ids")
                 if not isinstance(ids, list) or any(not isinstance(item, str) for item in ids):
                     raise ValueError("execution_ids must be a list of strings")
-                self.send_json(import_recordings(ids), 201)
+                self.send_json(_persist_import_best_effort(import_recordings(ids)), 201)
                 return
             if parsed.path == "/api/import-local":
-                self.send_json(import_local_dataset(), 201)
+                self.send_json(_persist_import_best_effort(import_local_dataset()), 201)
+                return
+            if parsed.path == "/api/import-local-recording":
+                folder = payload.get("folder")
+                if not isinstance(folder, str) or not folder.strip():
+                    raise ValueError("folder es obligatorio")
+                self.send_json(_persist_import_best_effort(import_one_local_recording(folder.strip())), 201)
                 return
             if parsed.path == "/api/training/start":
                 self.send_json(start_training(payload), 202)
