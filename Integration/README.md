@@ -17,8 +17,11 @@ Ejecutar el receptor RTSP y el clasificador:
 
 FFmpeg lee el RTSP, decodifica y convierte a PCM16LE estéreo de 44.1 kHz.
 Después `StreamingClassifier` acumula ventanas completas de cinco segundos y
-escribe las predicciones en `runs/rtsp/live_predictions.jsonl`. Una cola o
-ventana incompleta se informa como tail y no se clasifica.
+escribe las predicciones en `runs/rtsp/live_predictions.jsonl`. La metadata de
+la sesión se escribe en `runs/rtsp/live_predictions.metadata.json` y contiene
+el códec/formato detectado por FFprobe, contadores de chunks y frames, estado
+de FFmpeg, duración procesada y tail. Una cola o ventana incompleta se informa
+como tail y no se clasifica. Las URLs de los artefactos no contienen credenciales.
 
 ## Integración opcional: gRPC unary
 

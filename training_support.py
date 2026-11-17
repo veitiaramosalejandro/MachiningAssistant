@@ -3,8 +3,10 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import random
+import time
 from zoneinfo import ZoneInfo
 
 
@@ -28,21 +30,42 @@ def prepare_run_directory(output_dir, model_family: str, task: str) -> Path:
     return output
 
 
+def _temporary_path(path: Path) -> Path:
+    """Create a per-process temporary name to avoid Windows collisions."""
+    return path.with_name(f'{path.name}.{os.getpid()}.{time.time_ns()}.tmp')
+
+
+def _replace_with_retry(temporary: Path, path: Path) -> None:
+    """Replace a file, tolerating short antivirus/indexer locks on Windows."""
+    last_error = None
+    for attempt in range(8):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError as exc:
+            last_error = exc
+            if attempt == 7:
+                raise
+            time.sleep(0.15 * (attempt + 1))
+    if last_error is not None:
+        raise last_error
+
+
 def atomic_torch_save(value, path: str | Path) -> None:
     import torch
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + '.tmp')
+    temporary = _temporary_path(path)
     torch.save(value, temporary)
-    temporary.replace(path)
+    _replace_with_retry(temporary, path)
 
 
 def atomic_json(value, path: str | Path) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + '.tmp')
+    temporary = _temporary_path(path)
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + '\n', encoding='utf-8')
-    temporary.replace(path)
+    _replace_with_retry(temporary, path)
 
 
 def capture_rng_state(generators=None, device=None) -> dict:
