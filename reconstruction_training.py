@@ -29,12 +29,13 @@ from training_support import (
 DEFAULTS = {
     'epochs': 3, 'windows_per_recording': 16, 'batch_size': 8,
     'all_windows': False,
-    'sequence_length': 2048, 'latent_dim': 16, 'learning_rate': .001, 'beta': .001,
+    'sequence_length': 2048, 'latent_dim': 16, 'learning_rate': .0003, 'beta': .001,
+    'logvar_min': -8., 'logvar_max': 8.,
     'threads': 2, 'seed': 42, 'eval_every': 20, 'test_during_training': True,
     'device': 'auto',
 }
 LOCKED_SETTINGS = ('windows_per_recording', 'all_windows', 'batch_size', 'sequence_length', 'latent_dim',
-                   'learning_rate', 'beta', 'seed')
+                   'learning_rate', 'beta', 'logvar_min', 'logvar_max', 'seed')
 LOSS_KEYS = ('loss', 'reconstruction_loss', 'kl_loss')
 
 
@@ -108,6 +109,8 @@ def _parser():
     parser.add_argument('--latent-dim', type=int)
     parser.add_argument('--learning-rate', type=float)
     parser.add_argument('--beta', type=float)
+    parser.add_argument('--logvar-min', type=float)
+    parser.add_argument('--logvar-max', type=float)
     parser.add_argument('--threads', type=int)
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda'])
     parser.add_argument('--seed', type=int)
@@ -130,6 +133,9 @@ def _resolve_settings(args, checkpoint, training_state):
         for key in ('seed', 'learning_rate', 'beta', 'batch_size'):
             if key in info:
                 inherited[key] = info[key]
+        for key in ('logvar_min', 'logvar_max'):
+            if key in checkpoint.get('model_config', {}):
+                inherited[key] = checkpoint['model_config'][key]
         if 'windows_per_recording_limit' in info:
             inherited['windows_per_recording'] = info['windows_per_recording_limit']
         if info.get('split_csv'):
@@ -152,6 +158,10 @@ def _resolve_settings(args, checkpoint, training_state):
             raise ValueError(f'{key} must be positive')
     if settings['learning_rate'] <= 0 or settings['beta'] < 0:
         raise ValueError('learning_rate must be positive and beta must be nonnegative')
+    if (settings['logvar_min'] is None) != (settings['logvar_max'] is None):
+        raise ValueError('logvar_min and logvar_max must be set together')
+    if settings['logvar_min'] is not None and settings['logvar_min'] >= settings['logvar_max']:
+        raise ValueError('logvar_min and logvar_max must be ordered')
     return settings
 
 
@@ -317,7 +327,8 @@ def run_training(*, model_class, config_class, loss_function, engine_class,
     previous_state = checkpoint.get('training_state') if checkpoint is not None else None
     settings = _resolve_settings(args, checkpoint, previous_state)
     config = (config_class(**checkpoint['model_config']) if checkpoint is not None else
-              config_class(sequence_length=settings['sequence_length'], latent_dim=settings['latent_dim']))
+              config_class(sequence_length=settings['sequence_length'], latent_dim=settings['latent_dim'],
+                           logvar_min=settings['logvar_min'], logvar_max=settings['logvar_max']))
     if config.sequence_length != settings['sequence_length']:
         raise ValueError('Checkpoint model configuration differs from requested sequence_length')
     completed_epoch = (int(previous_state['completed_epoch']) if previous_state is not None else
@@ -345,12 +356,21 @@ def run_training(*, model_class, config_class, loss_function, engine_class,
         norm = ChannelNormalizer.from_dict(checkpoint['normalizer'])
         model.load_state_dict(checkpoint['state_dict'])
     tensors = {split: torch.from_numpy(norm.transform(dataset[split]['x'])) for split in SPLIT_NAMES}
+    for split, tensor in tensors.items():
+        if not torch.isfinite(tensor).all():
+            raise ValueError(f'Non-finite input detected after normalization in split {split}')
     optimizer = torch.optim.Adam(model.parameters(), lr=settings['learning_rate'])
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=3, threshold=1e-4,
+        threshold_mode='rel', min_lr=1e-6,
+    )
     generator = torch.Generator().manual_seed(settings['seed'])
     loader = DataLoader(TensorDataset(tensors['train']), batch_size=settings['batch_size'], shuffle=True,
                         generator=generator, num_workers=0)
     if previous_state is not None:
         optimizer.load_state_dict(previous_state['optimizer_state_dict'])
+        if previous_state.get('scheduler_state_dict'):
+            scheduler.load_state_dict(previous_state['scheduler_state_dict'])
         history = deepcopy(previous_state['history'])
         best_metric, best_epoch = previous_state['best_metric'], previous_state['best_epoch']
         best_state = deepcopy(previous_state['best_state_dict'])
@@ -377,6 +397,7 @@ def run_training(*, model_class, config_class, loss_function, engine_class,
         'split_csv': dataset['split_csv'], 'windows_per_recording_limit': None if settings['all_windows'] else settings['windows_per_recording'],
         'normalizer_fitted_to': 'training_windows_only', 'ignored_recordings': dataset['ignored_recordings'],
         'learning_rate': settings['learning_rate'], 'beta': settings['beta'], 'batch_size': settings['batch_size'],
+        'logvar_min': settings['logvar_min'], 'logvar_max': settings['logvar_max'],
         'resume_mode': resume_mode, 'resumed_from': str(resume_path) if resume_path else None,
         'device': str(device),
     }
@@ -393,6 +414,7 @@ def run_training(*, model_class, config_class, loss_function, engine_class,
             value['training_state'] = {
                 'schema_version': 1, 'completed_epoch': epoch,
                 'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
                 'rng_state': capture_rng_state({'loader': generator}, device=device),
                 'history': history, 'best_metric': best_metric, 'best_epoch': best_epoch,
                 'best_state_dict': best_state, 'initial_state_dict': initial_state,
@@ -433,6 +455,7 @@ def run_training(*, model_class, config_class, loss_function, engine_class,
     if previous_state is not None:
         restore_rng_state(previous_state['rng_state'], {'loader': generator}, device=device)
     atomic_torch_save(payload(completed_epoch), output/'last.pt')
+    atomic_torch_save(payload(completed_epoch), output/'last_valid.pt')
     _history_files(output, history)
     print(f'Run directory: {output}', flush=True)
     try:
@@ -443,8 +466,8 @@ def run_training(*, model_class, config_class, loss_function, engine_class,
                 batch = batch.to(device)
                 optimizer.zero_grad(set_to_none=True)
                 terms = loss_function(model(batch), batch, settings['beta'])
-                if not torch.isfinite(terms['loss']):
-                    raise RuntimeError('Non-finite training loss')
+                if any(not torch.isfinite(value).all() for value in terms.values()):
+                    raise RuntimeError('Non-finite training loss component')
                 terms['loss'].backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 5., error_if_nonfinite=True)
                 optimizer.step()
@@ -455,13 +478,16 @@ def run_training(*, model_class, config_class, loss_function, engine_class,
             val = evaluate(model, tensors['val'], settings['batch_size'], settings['beta'], loss_function) if should_evaluate else None
             test = (evaluate(model, tensors['test'], settings['batch_size'], settings['beta'], loss_function)
                     if should_evaluate and settings['test_during_training'] else None)
+            if val is not None:
+                scheduler.step(val['reconstruction_loss'])
             improved = val is not None and (best_metric is None or val['reconstruction_loss'] < best_metric)
             if improved:
                 best_metric, best_epoch = val['reconstruction_loss'], epoch
                 best_state = clone_model_state(model)
             seconds = time.perf_counter()-started
             cumulative_seconds += seconds
-            row = {'epoch': epoch, **{f'train_{key}': value/count for key, value in sums.items()},
+            row = {'epoch': epoch, 'learning_rate': optimizer.param_groups[0]['lr'],
+                   **{f'train_{key}': value/count for key, value in sums.items()},
                    **{f'val_{key}': val[key] if val is not None else None for key in LOSS_KEYS},
                    **{f'test_{key}': test[key] if test is not None else None for key in LOSS_KEYS},
                    'validation_evaluated': val is not None, 'test_evaluated': test is not None, 'seconds': seconds}
@@ -469,6 +495,7 @@ def run_training(*, model_class, config_class, loss_function, engine_class,
             completed_epoch = epoch
             saved = payload(completed_epoch)
             atomic_torch_save(saved, output/'last.pt')
+            atomic_torch_save(saved, output/'last_valid.pt')
             if should_evaluate:
                 atomic_torch_save(saved, output/'checkpoints'/f'epoch_{epoch:04d}.pt')
             if improved:

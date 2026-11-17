@@ -345,6 +345,32 @@
             overflow-wrap: anywhere;
         }
 
+        .recording-details-card {
+            align-self: stretch;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #details {
+            flex: 1;
+            min-height: 220px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #details table {
+            table-layout: fixed;
+            margin-top: 2px;
+        }
+
+        #details th {
+            width: 36%;
+        }
+
+        #details td {
+            overflow-wrap: anywhere;
+        }
+
         .summary-card {
             min-height: 146px;
         }
@@ -510,13 +536,14 @@
             </div>
             <div id="localImportResult"></div>
         </article>
-        <article class="card span-4"><h2>2. Detalle de grabación</h2>
+        <article class="card span-4 recording-details-card"><h2>2. Detalle de grabación</h2>
             <div id="details" class="muted">Selecciona una ejecución.</div>
         </article>
         <article class="card span-5"><h2>3. Preparar grabación para entrenamiento</h2>
             <p>Se copia el audio al workspace, se convierte a PCM16 estéreo 44,1 kHz y se crea un dataset reproducible
                 con train, val y test.</p>
             <button id="importButton" onclick="importSelected()" disabled>Preparar selección</button>
+            <button id="singleServiceImportButton" class="secondary" onclick="importSingleServiceRecording()" disabled>Preparar una grabación del servicio</button>
             <div id="importResult"></div>
         </article>
         <article class="card span-7"><h2>Preset de configuración</h2>
@@ -573,8 +600,9 @@
                 </select></div>
                 <div><label for="learningRate">Learning rate</label><select id="learningRate"
                                                                             onchange="updateConfigHelp()">
-                    <option value="0.0003">0.0003 · conservador</option>
-                    <option value="0.001" selected>0.001 · recomendado</option>
+                    <option value="0.0001">0.0001 · máxima estabilidad</option>
+                    <option value="0.0003" selected>0.0003 · recomendado</option>
+                    <option value="0.001">0.001 · experimental</option>
                 </select></div>
                 <div><label for="beta">Beta VAE</label><select id="beta" onchange="updateConfigHelp()">
                     <option value="0.0001">0.0001 · reconstrucción</option>
@@ -683,7 +711,7 @@
         'Fuente': 'Source', 'Carpeta': 'Folder', 'Grupo de adquisición': 'Acquisition group', 'Duración': 'Duration', 'Audio': 'Audio', 'Estado': 'Status', 'Detalle': 'Details', 'No disponible': 'Not available',
         'Grabación local seleccionada para entrenamiento especializado. Al prepararla se dividirá temporalmente en train, validation y test.': 'Local recording selected for specialized training. It will be split temporally into train, validation and test.',
         'Preparando grabaciones...': 'Preparing recordings...', 'Preparación completada.': 'Preparation completed.', 'Preparando segmentos temporales de la grabación seleccionada...': 'Preparing temporal segments of the selected recording...', 'Grabación seleccionada preparada. La validación es temporal dentro de la misma sesión.': 'Selected recording prepared. Validation is temporal within the same session.', 'Preparando Dataset/Data...': 'Preparing Dataset/Data...', 'Dataset local preparado sin mezclarlo con la fuente del servicio.': 'Local dataset prepared without mixing it with the service source.',
-        'Entrenamiento especializado': 'Specialized training', 'Entrenamiento': 'Training', 'iniciado.': 'started.', 'Estado final:': 'Final status:', 'Artefactos:': 'Artifacts:', 'Cargando ejecuciones anteriores...': 'Loading previous runs...', 'Todavía no hay ejecuciones persistidas.': 'There are no persisted runs yet.',
+        'Preparar una grabación del servicio': 'Prepare one service recording', 'Entrenamiento especializado': 'Specialized training', 'Entrenamiento': 'Training', 'iniciado.': 'started.', 'Estado final:': 'Final status:', 'Artefactos:': 'Artifacts:', 'Cargando ejecuciones anteriores...': 'Loading previous runs...', 'Todavía no hay ejecuciones persistidas.': 'There are no persisted runs yet.', 'Preparando la grabación del servicio en segmentos temporales...': 'Preparing the service recording as temporal segments...', 'Grabación del servicio preparada. La validación es temporal dentro de la misma sesión.': 'Service recording prepared. Validation is temporal within the same session.',
         'Diferencia validation/train:': 'Validation/train gap:', 'Sin diferencia disponible': 'No gap available', 'Posible sobreajuste.': 'Possible overfitting.', 'Mejora relativa en validation': 'Relative improvement on validation', 'Mejor época:': 'Best epoch:', 'de': 'of', '40% train + 60% validation': '40% train + 60% validation',
         'CNN1D-VAE con ventana corta: recomendado para aprender patrones locales de una grabación.': 'CNN1D-VAE with a short window: recommended for local patterns in one recording.', 'Ventana larga: captura contexto temporal mayor, pero necesita más memoria y puede reducir la cantidad útil de ventanas.': 'Long window: captures more temporal context, but needs more memory and may reduce useful windows.', 'Perfil conservador: menor capacidad y pasos más pequeños para una primera prueba estable.': 'Conservative profile: lower capacity and smaller steps for a stable first test.',
         'CNN1D-VAE procesa patrones locales del audio.': 'CNN1D-VAE processes local audio patterns.', 'LSTM-VAE procesa la evolución temporal de la señal.': 'LSTM-VAE processes the temporal evolution of the signal.', 'Ventana solicitada:': 'Requested window:', 'duración compatible:': 'compatible duration:', 'muestras': 'samples', 'latente:': 'latent:', 'dimensiones': 'dimensions', 'épocas máximas:': 'maximum epochs:', 'Batch': 'Batch', 'ejemplos por actualización': 'examples per update', 'learning rate': 'learning rate', 'tamaño de paso': 'step size', 'beta': 'beta', 'regularización VAE': 'VAE regularization', 'evaluación cada': 'evaluation every', 'dispositivo:': 'device:'
@@ -693,7 +721,7 @@
         'Fuente': 'Fonte', 'Carpeta': 'Pasta', 'Grupo de adquisición': 'Grupo de aquisição', 'Duración': 'Duração', 'Audio': 'Áudio', 'Estado': 'Estado', 'Detalle': 'Detalhes', 'No disponible': 'Não disponível',
         'Grabación local seleccionada para entrenamiento especializado. Al prepararla se dividirá temporalmente en train, validation y test.': 'Gravação local selecionada para treino especializado. Será dividida temporalmente em treino, validação e teste.',
         'Preparando grabaciones...': 'A preparar gravações...', 'Preparación completada.': 'Preparação concluída.', 'Preparando segmentos temporales de la grabación seleccionada...': 'A preparar segmentos temporais da gravação selecionada...', 'Grabación seleccionada preparada. La validación es temporal dentro de la misma sesión.': 'Gravação selecionada preparada. A validação é temporal dentro da mesma sessão.', 'Preparando Dataset/Data...': 'A preparar Dataset/Data...', 'Dataset local preparado sin mezclarlo con la fuente del servicio.': 'Dataset local preparado sem o misturar com a fonte do serviço.',
-        'Entrenamiento especializado': 'Treino especializado', 'Entrenamiento': 'Treino', 'iniciado.': 'iniciado.', 'Estado final:': 'Estado final:', 'Artefactos:': 'Artefactos:', 'Cargando ejecuciones anteriores...': 'A carregar execuções anteriores...', 'Todavía no hay ejecuciones persistidas.': 'Ainda não existem execuções persistidas.',
+        'Preparar una grabación del servicio': 'Preparar uma gravação do serviço', 'Entrenamiento especializado': 'Treino especializado', 'Entrenamiento': 'Treino', 'iniciado.': 'iniciado.', 'Estado final:': 'Estado final:', 'Artefactos:': 'Artefactos:', 'Cargando ejecuciones anteriores...': 'A carregar execuções anteriores...', 'Todavía no hay ejecuciones persistidas.': 'Ainda não existem execuções persistidas.', 'Preparando la grabación del servicio en segmentos temporales...': 'A preparar a gravação do serviço em segmentos temporais...', 'Grabación del servicio preparada. La validación es temporal dentro de la misma sesión.': 'Gravação do serviço preparada. A validação é temporal dentro da mesma sessão.',
         'Diferencia validation/train:': 'Diferença validação/treino:', 'Sin diferencia disponible': 'Sem diferença disponível', 'Posible sobreajuste.': 'Possível sobreajuste.', 'Mejora relativa en validation': 'Melhoria relativa na validação', 'Mejor época:': 'Melhor época:', 'de': 'de', '40% train + 60% validation': '40% treino + 60% validação',
         'CNN1D-VAE con ventana corta: recomendado para aprender patrones locales de una grabación.': 'CNN1D-VAE com janela curta: recomendado para aprender padrões locais de uma gravação.', 'Ventana larga: captura contexto temporal mayor, pero necesita más memoria y puede reducir la cantidad útil de ventanas.': 'Janela longa: capta mais contexto temporal, mas necessita de mais memória e pode reduzir o número útil de janelas.', 'Perfil conservador: menor capacidad y pasos más pequeños para una primera prueba estable.': 'Perfil conservador: menor capacidade e passos menores para um primeiro teste estável.',
         'CNN1D-VAE procesa patrones locales del audio.': 'CNN1D-VAE processa padrões locais do áudio.', 'LSTM-VAE procesa la evolución temporal de la señal.': 'LSTM-VAE processa a evolução temporal do sinal.', 'Ventana solicitada:': 'Janela solicitada:', 'duración compatible:': 'duração compatível:', 'muestras': 'amostras', 'latente:': 'latente:', 'dimensiones': 'dimensões', 'Batch': 'Batch', 'ejemplos por actualización': 'exemplos por atualização', 'learning rate': 'taxa de aprendizagem', 'tamaño de paso': 'tamanho do passo', 'beta': 'beta', 'regularización VAE': 'regularização VAE', 'evaluación cada': 'avaliação a cada', 'dispositivo:': 'dispositivo:'
@@ -795,6 +823,7 @@
     async function showSelected() {
         const list = selected();
         $('importButton').disabled = list.length < 3;
+        $('singleServiceImportButton').disabled = list.length !== 1;
         if (!list.length) {
             $('details').textContent = 'Selecciona una ejecución.';
             return;
@@ -823,6 +852,30 @@
             $('log').textContent = e.stack || e.message;
         } finally {
             $('importButton').disabled = ids.length < 3;
+        }
+    }
+
+    async function importSingleServiceRecording() {
+        const item = selected()[0];
+        if (!item) return;
+        $('singleServiceImportButton').disabled = true;
+        $('log').textContent = 'Preparando la grabación del servicio en segmentos temporales...';
+        try {
+            selectedImport = await api('/api/import-single', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({execution_id: item.executionId})
+            });
+            $('importInfo').innerHTML = `Entrenamiento especializado <span class="pill">${esc(selectedImport.job_id)}</span> listo: 70% train · 15% val · 15% test.`;
+            $('trainButton').disabled = false;
+            $('importResult').innerHTML = '<p class="ok">Grabación del servicio preparada. La validación es temporal dentro de la misma sesión.</p>';
+            $('log').textContent = JSON.stringify(selectedImport, null, 2);
+            applyLanguage();
+        } catch (e) {
+            $('importResult').innerHTML = `<p class="bad">${esc(e.message)}</p>`;
+            $('log').textContent = e.stack || e.message;
+        } finally {
+            $('singleServiceImportButton').disabled = selected().length !== 1;
         }
     }
 
@@ -1009,7 +1062,7 @@
                 device: 'auto',
                 epochs: '60',
                 batchSize: '8',
-                learningRate: '0.001',
+                learningRate: '0.0003',
                 beta: '0.001',
                 evalEvery: '10',
                 help: 'CNN1D-VAE con ventana corta: recomendado para aprender patrones locales de una grabación.'
@@ -1021,7 +1074,7 @@
                 device: 'auto',
                 epochs: '60',
                 batchSize: '8',
-                learningRate: '0.001',
+                learningRate: '0.0003',
                 beta: '0.001',
                 evalEvery: '10',
                 help: 'Ventana larga: captura contexto temporal mayor, pero necesita más memoria y puede reducir la cantidad útil de ventanas.'

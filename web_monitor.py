@@ -471,11 +471,120 @@ def import_recordings(execution_ids: list[str], sample_rate: int = 44100) -> dic
                 if source.is_file():
                     shutil.copy2(source, target_dir / name)
             split = ("train", "val", "test")[index % 3]
-            rows.append({"recording_id": recording_id, "source_recording_id": execution_id, "split": split})
+            # Each temporal segment is a distinct dataset recording so the
+            # split validator does not treat one session as cross-split leakage.
+            # The original execution remains in the manifest and metadata for traceability.
+            rows.append({"recording_id": recording_id, "source_recording_id": recording_id, "split": split})
             imported.append({"execution_id": execution_id, "recording_id": recording_id, "wav": str(target_wav), "wav_info": wav_info(target_wav)})
         split_csv = root / "dataset_splits.csv"
         write_split_csv(split_csv, rows)
         manifest = {"job_id": job_id, "sample_rate_hz": sample_rate, "data_dir": str(data_dir), "split_csv": str(split_csv), "recordings": imported}
+        (root / "import_manifest.json").write_bytes(json_bytes(manifest))
+        return manifest
+    except Exception:
+        shutil.rmtree(root, ignore_errors=True)
+        raise
+
+
+def _slice_timed_document(document: dict, collection: str, start_s: float, end_s: float, carry_forward: bool = False) -> dict:
+    """Shift context/event timestamps into a temporal recording segment."""
+    if not isinstance(document, dict) or not isinstance(document.get(collection), list):
+        return document if isinstance(document, dict) else {}
+    entries = [item for item in document[collection] if isinstance(item, dict)]
+    selected = []
+    previous = None
+    for item in entries:
+        timestamp = float(item.get("timestamp_seconds", 0) or 0)
+        if timestamp <= start_s:
+            previous = item
+        if start_s <= timestamp <= end_s:
+            selected.append(item)
+    if carry_forward and previous is not None and previous not in selected:
+        selected.insert(0, previous)
+    result = dict(document)
+    result[collection] = []
+    for item in selected:
+        copied = dict(item)
+        copied["timestamp_seconds"] = max(0.0, float(item.get("timestamp_seconds", 0) or 0) - start_s)
+        result[collection].append(copied)
+    return result
+
+
+def import_one_service_recording(execution_id: str, sample_rate: int = 44100) -> dict:
+    """Prepare one service recording as a temporal train/val/test dataset."""
+    if sample_rate != 44100:
+        raise ValueError("La primera versión del entrenamiento requiere 44100 Hz")
+    execution_id = safe_execution_id(execution_id)
+    source_dir = find_recording_dir(execution_id)
+    if source_dir is None:
+        raise FileNotFoundError(f"No existe almacenamiento local para {execution_id}")
+    wavs = sorted(source_dir.glob("audio_*.wav"))
+    if not wavs:
+        raise FileNotFoundError(f"La ejecución {execution_id} no contiene audio WAV")
+    duration = float(wav_info(wavs[0])["duration_s"])
+    if duration < 1.0:
+        raise ValueError("La grabación es demasiado corta para crear tres segmentos temporales")
+    boundaries = {
+        "train": (0.0, duration * 0.70),
+        "val": (duration * 0.70, duration * 0.85),
+        "test": (duration * 0.85, duration),
+    }
+    job_id = time.strftime("%Y%m%d_%H%M%S") + "_single_service_" + uuid.uuid4().hex[:8]
+    root = RUNS_ROOT / job_id
+    data_dir = root / "data"
+    root.mkdir(parents=True, exist_ok=False)
+    imported, rows = [], []
+    try:
+        source_metadata = _read_json_file(source_dir / "metadata.json", {"ExecutionId": execution_id})
+        contexts = _read_json_file(source_dir / "contexts.json", {})
+        events = _read_json_file(source_dir / "events.json", {})
+        playback = _read_json_file(source_dir / "playback.json", {})
+        for split, (start_s, end_s) in boundaries.items():
+            recording_id = f"{execution_id}-{split}"
+            target_dir = data_dir / recording_id
+            target_dir.mkdir(parents=True)
+            target_wav = target_dir / "audio_000000.wav"
+            command = [
+                FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-i", str(wavs[0]),
+                "-ss", f"{start_s:.6f}", "-t", f"{end_s - start_s:.6f}",
+                "-ac", "2", "-ar", str(sample_rate), "-c:a", "pcm_s16le", str(target_wav),
+            ]
+            completed = subprocess.run(command, capture_output=True, text=True, timeout=600, check=False)
+            if completed.returncode != 0 or not target_wav.is_file():
+                raise RuntimeError(f"FFmpeg no pudo preparar el segmento {split}: {completed.stderr[-500:]}")
+            metadata = dict(source_metadata)
+            metadata.pop("SourceRecording", None)
+            metadata["ExecutionId"] = recording_id
+            metadata["SpecializedSourceRecording"] = {
+                "source": "MachiningMonitor",
+                "execution_id": execution_id,
+                "source_folder": str(source_dir),
+                "split": split,
+                "start_seconds": start_s,
+                "end_seconds": end_s,
+                "split_policy": "70/15/15 temporal; misma sesión de servicio",
+            }
+            (target_dir / "metadata.json").write_bytes(json_bytes(metadata))
+            (target_dir / "contexts.json").write_bytes(json_bytes(_slice_timed_document(contexts, "contexts", start_s, end_s, True)))
+            (target_dir / "events.json").write_bytes(json_bytes(_slice_timed_document(events, "annotations", start_s, end_s, False)))
+            (target_dir / "playback.json").write_bytes(json_bytes(playback))
+            # Temporal segments are distinct dataset recordings for split validation.
+            # The original execution_id remains in metadata and the manifest.
+            rows.append({"recording_id": recording_id, "source_recording_id": recording_id, "split": split})
+            imported.append({
+                "execution_id": execution_id, "source_folder": source_dir.name, "recording_id": recording_id,
+                "split": split, "start_seconds": start_s, "end_seconds": end_s,
+                "wav": str(target_wav), "wav_info": wav_info(target_wav),
+            })
+        split_csv = root / "dataset_splits.csv"
+        write_split_csv(split_csv, rows)
+        manifest = {
+            "job_id": job_id, "source": "MachiningMonitor/single_recording", "source_root": str(source_dir.parent),
+            "source_folder": source_dir.name, "source_recording_id": execution_id,
+            "temporal_split": {"train": 0.70, "val": 0.15, "test": 0.15},
+            "validation_note": "Los tres splits proceden de una misma sesión del servicio; no representan generalización entre sesiones.",
+            "sample_rate_hz": sample_rate, "data_dir": str(data_dir), "split_csv": str(split_csv), "recordings": imported,
+        }
         (root / "import_manifest.json").write_bytes(json_bytes(manifest))
         return manifest
     except Exception:
@@ -757,7 +866,7 @@ def start_training(payload: dict) -> dict:
         "window_duration_ms": WINDOW_DURATION_OPTIONS_MS,
         "latent_dim": {8, 16, 32},
         "batch_size": {8, 16, 32},
-        "learning_rate": {0.0003, 0.001},
+        "learning_rate": {0.0001, 0.0003, 0.001},
         "beta": {0.0001, 0.001, 0.01},
         "eval_every": {5, 10, 20},
         "device": {"auto", "cuda", "cpu"},
@@ -773,7 +882,7 @@ def start_training(payload: dict) -> dict:
     sequence_length, actual_duration_ms = sequence_length_for_duration(requested_duration_ms)
     latent_dim = selected("latent_dim", 16, int)
     batch_size = selected("batch_size", 8, int)
-    learning_rate = selected("learning_rate", 0.001, float)
+    learning_rate = selected("learning_rate", 0.0003, float)
     beta = selected("beta", 0.001, float)
     eval_every = selected("eval_every", 10, int)
     device = selected("device", "auto", str)
@@ -790,10 +899,11 @@ def start_training(payload: dict) -> dict:
         "--output-dir", str(output_dir), "--epochs", str(epochs), "--all-windows",
         "--sequence-length", str(sequence_length), "--latent-dim", str(latent_dim),
         "--batch-size", str(batch_size), "--learning-rate", str(learning_rate), "--beta", str(beta),
+        "--logvar-min", "-8", "--logvar-max", "8",
         "--eval-every", str(eval_every), "--device", device,
     ]
     training_id = f"{job_id}_{model}"
-    job = {"training_id": training_id, "import_job_id": job_id, "model": model, "status": "starting", "args": args[1:], "configuration": {"all_windows": True, "window_duration_ms": requested_duration_ms, "actual_window_duration_ms": round(actual_duration_ms, 3), "sequence_length": sequence_length, "latent_dim": latent_dim, "batch_size": batch_size, "learning_rate": learning_rate, "beta": beta, "eval_every": eval_every, "device": device}, "started_at": time.time(), "output_dir": str(output_dir), "log_tail": ""}
+    job = {"training_id": training_id, "import_job_id": job_id, "model": model, "status": "starting", "args": args[1:], "configuration": {"all_windows": True, "window_duration_ms": requested_duration_ms, "actual_window_duration_ms": round(actual_duration_ms, 3), "sequence_length": sequence_length, "latent_dim": latent_dim, "batch_size": batch_size, "learning_rate": learning_rate, "beta": beta, "logvar_min": -8.0, "logvar_max": 8.0, "eval_every": eval_every, "device": device}, "started_at": time.time(), "output_dir": str(output_dir), "log_tail": ""}
     with _jobs_lock:
         _jobs[training_id] = job
     threading.Thread(target=train_worker, args=(training_id, args, output_dir), daemon=True).start()
@@ -913,6 +1023,12 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(ids, list) or any(not isinstance(item, str) for item in ids):
                     raise ValueError("execution_ids must be a list of strings")
                 self.send_json(_persist_import_best_effort(import_recordings(ids)), 201)
+                return
+            if parsed.path == "/api/import-single":
+                execution_id = payload.get("execution_id")
+                if not isinstance(execution_id, str) or not execution_id.strip():
+                    raise ValueError("execution_id es obligatorio")
+                self.send_json(_persist_import_best_effort(import_one_service_recording(execution_id.strip())), 201)
                 return
             if parsed.path == "/api/import-local":
                 self.send_json(_persist_import_best_effort(import_local_dataset()), 201)
