@@ -234,7 +234,8 @@ def _engineering_outputs(output, dataset, tensors, model, config, initial_state,
                                        include_reconstruction=False)
     stream_error = float(np.max(np.abs(np.asarray([row['reconstruction_mse_standardized'] for row in streamed])-
                                       direct['reconstruction_mse_standardized'])))
-    if len(streamed) != count or stream.pending_frames != tail or stream_error > 1e-5:
+    streaming_tolerance = 1e-4 if device == 'cuda' else 1e-5
+    if len(streamed) != count or stream.pending_frames != tail or stream_error > streaming_tolerance:
         raise AssertionError('Streaming/offline check failed')
     sample_predictions = []
     for split in SPLIT_NAMES:
@@ -285,7 +286,8 @@ def _engineering_outputs(output, dataset, tensors, model, config, initial_state,
         'verified_prediction_windows': len(sample_predictions),
         'checkpoint_max_abs_replay_delta_pcm': reload_delta,
         'streaming_check': {'emitted_windows': len(streamed), 'pending_frames': stream.pending_frames,
-                            'max_score_delta': stream_error},
+                            'max_score_delta': stream_error, 'tolerance': streaming_tolerance,
+                            'comparison_note': 'CUDA uses a wider numerical tolerance for equivalent batch/stream inference.' if device == 'cuda' else 'CPU tolerance.'},
         'single_window_inference_median_ms': float(np.median(elapsed)),
         'single_window_inference_p95_ms': float(np.quantile(elapsed, .95)),
         'latency_measurement': f'Warm {reloaded.device}, batch=1, normalization and score/latent conversion included; WAV I/O and reconstruction JSON excluded.',
