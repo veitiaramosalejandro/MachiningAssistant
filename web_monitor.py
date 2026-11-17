@@ -73,6 +73,8 @@ DATA_ROOT = env_path(
 )
 FFMPEG = setting("MACHINING_FFMPEG", "ffmpeg")
 LOCAL_DATA_ROOT = PROJECT_ROOT / "Dataset" / "Data"
+SAMPLE_RATE_HZ = 44100
+WINDOW_DURATION_OPTIONS_MS = {50, 100, 200, 500}
 
 _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
@@ -80,6 +82,16 @@ _jobs_lock = threading.Lock()
 
 def json_bytes(value: object) -> bytes:
     return (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
+def sequence_length_for_duration(duration_ms: int) -> tuple[int, float]:
+    """Convert a UI duration to a CNN-compatible sample count."""
+    if duration_ms not in WINDOW_DURATION_OPTIONS_MS:
+        raise ValueError("window_duration_ms no está entre las opciones permitidas")
+    requested = duration_ms / 1000 * SAMPLE_RATE_HZ
+    sequence_length = max(64, int(round(requested / 64)) * 64)
+    actual_ms = sequence_length / SAMPLE_RATE_HZ * 1000
+    return sequence_length, actual_ms
 
 
 def service_get(path: str) -> object:
@@ -743,7 +755,7 @@ def start_training(payload: dict) -> dict:
     allowed = {
         "epochs": {20, 40, 60, 100, 120, 200, 350},
         "windows_per_recording": {16, 64, 128, 300, 600},
-        "sequence_length": {2048, 8192, 16384},
+        "window_duration_ms": WINDOW_DURATION_OPTIONS_MS,
         "latent_dim": {8, 16, 32},
         "batch_size": {8, 16, 32},
         "learning_rate": {0.0003, 0.001},
@@ -759,7 +771,8 @@ def start_training(payload: dict) -> dict:
 
     epochs = selected("epochs", 20, int)
     windows = selected("windows_per_recording", 64, int)
-    sequence_length = selected("sequence_length", 2048, int)
+    requested_duration_ms = selected("window_duration_ms", 50, int)
+    sequence_length, actual_duration_ms = sequence_length_for_duration(requested_duration_ms)
     latent_dim = selected("latent_dim", 16, int)
     batch_size = selected("batch_size", 8, int)
     learning_rate = selected("learning_rate", 0.001, float)
@@ -782,7 +795,7 @@ def start_training(payload: dict) -> dict:
         "--eval-every", str(eval_every), "--device", device,
     ]
     training_id = f"{job_id}_{model}"
-    job = {"training_id": training_id, "import_job_id": job_id, "model": model, "status": "starting", "args": args[1:], "configuration": {"epochs": epochs, "windows_per_recording": windows, "sequence_length": sequence_length, "latent_dim": latent_dim, "batch_size": batch_size, "learning_rate": learning_rate, "beta": beta, "eval_every": eval_every, "device": device}, "started_at": time.time(), "output_dir": str(output_dir), "log_tail": ""}
+    job = {"training_id": training_id, "import_job_id": job_id, "model": model, "status": "starting", "args": args[1:], "configuration": {"epochs": epochs, "windows_per_recording": windows, "window_duration_ms": requested_duration_ms, "actual_window_duration_ms": round(actual_duration_ms, 3), "sequence_length": sequence_length, "latent_dim": latent_dim, "batch_size": batch_size, "learning_rate": learning_rate, "beta": beta, "eval_every": eval_every, "device": device}, "started_at": time.time(), "output_dir": str(output_dir), "log_tail": ""}
     with _jobs_lock:
         _jobs[training_id] = job
     threading.Thread(target=train_worker, args=(training_id, args, output_dir), daemon=True).start()
