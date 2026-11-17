@@ -566,14 +566,6 @@
                     <option value="200">200 · experimental</option>
                     <option value="350">350 · investigación</option>
                 </select></div>
-                <div><label for="windows">Ventanas por grabación</label><select id="windows"
-                                                                                onchange="updateConfigHelp()">
-                    <option value="16">16 · rápido</option>
-                    <option value="64">64 · baseline</option>
-                    <option value="128">128 · cobertura media</option>
-                    <option value="300" selected>300 · recomendado</option>
-                    <option value="600">600 · cobertura alta</option>
-                </select></div>
                 <div><label for="batchSize">Batch size</label><select id="batchSize" onchange="updateConfigHelp()">
                     <option value="8" selected>8 · estable</option>
                     <option value="16">16 · más rendimiento</option>
@@ -650,7 +642,6 @@
             'Duración de ventana': 'Window duration', 'Corta · 50 ms solicitados': 'Short · 50 ms requested', 'Media · 100 ms solicitados': 'Medium · 100 ms requested', 'Larga · 200 ms solicitados': 'Long · 200 ms requested', 'Extensa · 500 ms solicitados': 'Extended · 500 ms requested',
             'Dimensión latente': 'Latent dimension', '8 · compacto': '8 · compact', '16 · recomendado': '16 · recommended', '32 · mayor capacidad': '32 · higher capacity', 'Dispositivo': 'Device', 'Auto · CUDA si está disponible': 'Auto · CUDA if available', 'CUDA · obligatorio': 'CUDA · required', 'CPU': 'CPU',
             'Entrenamiento': 'Training', 'Épocas máximas': 'Maximum epochs', '20 · exploración': '20 · exploration', '40 · baseline': '40 · baseline', '60 · recomendado': '60 · recommended', '100 · estudio': '100 · study', '120 · prolongado': '120 · extended', '200 · experimental': '200 · experimental', '350 · investigación': '350 · research',
-            'Ventanas por grabación': 'Windows per recording', '16 · rápido': '16 · fast', '64 · baseline': '64 · baseline', '128 · cobertura media': '128 · medium coverage', '300 · recomendado': '300 · recommended', '600 · cobertura alta': '600 · high coverage',
             'Batch size': 'Batch size', '8 · estable': '8 · stable', '16 · más rendimiento': '16 · more throughput', '32 · alta memoria': '32 · high memory', 'Learning rate': 'Learning rate', '0.0003 · conservador': '0.0003 · conservative', '0.001 · recomendado': '0.001 · recommended',
             'Beta VAE': 'VAE beta', '0.0001 · reconstrucción': '0.0001 · reconstruction', '0.001 · recomendado': '0.001 · recommended', '0.01 · regularización': '0.01 · regularization', 'Evaluar cada': 'Evaluate every', '5 épocas · detallado': '5 epochs · detailed', '10 épocas · recomendado': '10 epochs · recommended', '20 épocas · rápido': '20 epochs · fast',
             'Iniciar entrenamiento': 'Start training', 'Salida y progreso': 'Output and progress', 'Esperando una operación.': 'Waiting for an operation.', 'Resultado visual del entrenamiento': 'Visual training result', 'Scores por contexto': 'Scores by context', 'Ventanas con mayor score': 'Highest-scoring windows', 'Historial de aprendizaje': 'Learning history',
@@ -678,7 +669,6 @@
             'Duración de ventana': 'Duração da janela', 'Corta · 50 ms solicitados': 'Curta · 50 ms solicitados', 'Media · 100 ms solicitados': 'Média · 100 ms solicitados', 'Larga · 200 ms solicitados': 'Longa · 200 ms solicitados', 'Extensa · 500 ms solicitados': 'Extensa · 500 ms solicitados',
             'Dimensión latente': 'Dimensão latente', '8 · compacto': '8 · compacto', '16 · recomendado': '16 · recomendado', '32 · mayor capacidad': '32 · maior capacidade', 'Dispositivo': 'Dispositivo', 'Auto · CUDA si está disponible': 'Auto · CUDA se disponível', 'CUDA · obligatorio': 'CUDA · obrigatório', 'CPU': 'CPU',
             'Entrenamiento': 'Treino', 'Épocas máximas': 'Épocas máximas', '20 · exploración': '20 · exploração', '40 · baseline': '40 · baseline', '60 · recomendado': '60 · recomendado', '100 · estudio': '100 · estudo', '120 · prolongado': '120 · prolongado', '200 · experimental': '200 · experimental', '350 · investigación': '350 · investigação',
-            'Ventanas por grabación': 'Janelas por gravação', '16 · rápido': '16 · rápido', '64 · baseline': '64 · baseline', '128 · cobertura media': '128 · cobertura média', '300 · recomendado': '300 · recomendado', '600 · cobertura alta': '600 · cobertura alta',
             'Batch size': 'Tamanho do batch', '8 · estable': '8 · estável', '16 · más rendimiento': '16 · maior desempenho', '32 · alta memoria': '32 · muita memória', 'Learning rate': 'Taxa de aprendizagem', '0.0003 · conservador': '0.0003 · conservador', '0.001 · recomendado': '0.001 · recomendado',
             'Beta VAE': 'Beta VAE', '0.0001 · reconstrucción': '0.0001 · reconstrução', '0.001 · recomendado': '0.001 · recomendado', '0.01 · regularización': '0.01 · regularização', 'Evaluar cada': 'Avaliar a cada', '5 épocas · detallado': '5 épocas · detalhado', '10 épocas · recomendado': '10 épocas · recomendado', '20 épocas · rápido': '20 épocas · rápido',
             'Iniciar entrenamiento': 'Iniciar treino', 'Salida y progreso': 'Saída e progresso', 'Esperando una operación.': 'A aguardar uma operação.', 'Resultado visual del entrenamiento': 'Resultado visual do treino', 'Scores por contexto': 'Scores por contexto', 'Ventanas con mayor score': 'Janelas com maior score', 'Historial de aprendizaje': 'Histórico de aprendizagem',
@@ -696,7 +686,7 @@
         'Entrenamiento especializado': 'Specialized training', 'Entrenamiento': 'Training', 'iniciado.': 'started.', 'Estado final:': 'Final status:', 'Artefactos:': 'Artifacts:', 'Cargando ejecuciones anteriores...': 'Loading previous runs...', 'Todavía no hay ejecuciones persistidas.': 'There are no persisted runs yet.',
         'Diferencia validation/train:': 'Validation/train gap:', 'Sin diferencia disponible': 'No gap available', 'Posible sobreajuste.': 'Possible overfitting.', 'Mejora relativa en validation': 'Relative improvement on validation', 'Mejor época:': 'Best epoch:', 'de': 'of', '40% train + 60% validation': '40% train + 60% validation',
         'CNN1D-VAE con ventana corta: recomendado para aprender patrones locales de una grabación.': 'CNN1D-VAE with a short window: recommended for local patterns in one recording.', 'Ventana larga: captura contexto temporal mayor, pero necesita más memoria y puede reducir la cantidad útil de ventanas.': 'Long window: captures more temporal context, but needs more memory and may reduce useful windows.', 'Perfil conservador: menor capacidad y pasos más pequeños para una primera prueba estable.': 'Conservative profile: lower capacity and smaller steps for a stable first test.',
-        'CNN1D-VAE procesa patrones locales del audio.': 'CNN1D-VAE processes local audio patterns.', 'LSTM-VAE procesa la evolución temporal de la señal.': 'LSTM-VAE processes the temporal evolution of the signal.', 'Ventana solicitada:': 'Requested window:', 'duración compatible:': 'compatible duration:', 'muestras': 'samples', 'latente:': 'latent:', 'dimensiones': 'dimensions', 'épocas máximas:': 'maximum epochs:', 'ventanas por grabación:': 'windows per recording:', 'Batch': 'Batch', 'ejemplos por actualización': 'examples per update', 'learning rate': 'learning rate', 'tamaño de paso': 'step size', 'beta': 'beta', 'regularización VAE': 'VAE regularization', 'evaluación cada': 'evaluation every', 'dispositivo:': 'device:'
+        'CNN1D-VAE procesa patrones locales del audio.': 'CNN1D-VAE processes local audio patterns.', 'LSTM-VAE procesa la evolución temporal de la señal.': 'LSTM-VAE processes the temporal evolution of the signal.', 'Ventana solicitada:': 'Requested window:', 'duración compatible:': 'compatible duration:', 'muestras': 'samples', 'latente:': 'latent:', 'dimensiones': 'dimensions', 'épocas máximas:': 'maximum epochs:', 'Batch': 'Batch', 'ejemplos por actualización': 'examples per update', 'learning rate': 'learning rate', 'tamaño de paso': 'step size', 'beta': 'beta', 'regularización VAE': 'VAE regularization', 'evaluación cada': 'evaluation every', 'dispositivo:': 'device:'
     });
     Object.assign(TRANSLATIONS['pt-PT'], {
         'API': 'API', 'ready': 'pronta', 'protegido/no disponible': 'protegida/indisponível', 'grabaciones válidas': 'gravações válidas', 'grupos de adquisición': 'grupos de aquisição', 'min': 'min', 'No hay grabaciones válidas': 'Não existem gravações válidas', 'ejecuciones visibles.': 'gravações visíveis.', 'candidatas de entrenamiento.': 'candidatas a treino.', 'canales': 'canais', 'grupo': 'grupo',
@@ -706,9 +696,11 @@
         'Entrenamiento especializado': 'Treino especializado', 'Entrenamiento': 'Treino', 'iniciado.': 'iniciado.', 'Estado final:': 'Estado final:', 'Artefactos:': 'Artefactos:', 'Cargando ejecuciones anteriores...': 'A carregar execuções anteriores...', 'Todavía no hay ejecuciones persistidas.': 'Ainda não existem execuções persistidas.',
         'Diferencia validation/train:': 'Diferença validação/treino:', 'Sin diferencia disponible': 'Sem diferença disponível', 'Posible sobreajuste.': 'Possível sobreajuste.', 'Mejora relativa en validation': 'Melhoria relativa na validação', 'Mejor época:': 'Melhor época:', 'de': 'de', '40% train + 60% validation': '40% treino + 60% validação',
         'CNN1D-VAE con ventana corta: recomendado para aprender patrones locales de una grabación.': 'CNN1D-VAE com janela curta: recomendado para aprender padrões locais de uma gravação.', 'Ventana larga: captura contexto temporal mayor, pero necesita más memoria y puede reducir la cantidad útil de ventanas.': 'Janela longa: capta mais contexto temporal, mas necessita de mais memória e pode reduzir o número útil de janelas.', 'Perfil conservador: menor capacidad y pasos más pequeños para una primera prueba estable.': 'Perfil conservador: menor capacidade e passos menores para um primeiro teste estável.',
-        'CNN1D-VAE procesa patrones locales del audio.': 'CNN1D-VAE processa padrões locais do áudio.', 'LSTM-VAE procesa la evolución temporal de la señal.': 'LSTM-VAE processa a evolução temporal do sinal.', 'Ventana solicitada:': 'Janela solicitada:', 'duración compatible:': 'duração compatível:', 'muestras': 'amostras', 'latente:': 'latente:', 'dimensiones': 'dimensões', 'épocas máximas:': 'épocas máximas:', 'ventanas por grabación:': 'janelas por gravação:', 'Batch': 'Batch', 'ejemplos por actualización': 'exemplos por atualização', 'learning rate': 'taxa de aprendizagem', 'tamaño de paso': 'tamanho do passo', 'beta': 'beta', 'regularización VAE': 'regularização VAE', 'evaluación cada': 'avaliação a cada', 'dispositivo:': 'dispositivo:'
+        'CNN1D-VAE procesa patrones locales del audio.': 'CNN1D-VAE processa padrões locais do áudio.', 'LSTM-VAE procesa la evolución temporal de la señal.': 'LSTM-VAE processa a evolução temporal do sinal.', 'Ventana solicitada:': 'Janela solicitada:', 'duración compatible:': 'duração compatível:', 'muestras': 'amostras', 'latente:': 'latente:', 'dimensiones': 'dimensões', 'Batch': 'Batch', 'ejemplos por actualización': 'exemplos por atualização', 'learning rate': 'taxa de aprendizagem', 'tamaño de paso': 'tamanho do passo', 'beta': 'beta', 'regularización VAE': 'regularização VAE', 'evaluación cada': 'avaliação a cada', 'dispositivo:': 'dispositivo:'
     });
 
+    TRANSLATIONS.en['Todas las ventanas completas disponibles se utilizarán en cada grabación.'] = 'All available complete windows will be used for each recording.';
+    TRANSLATIONS['pt-PT']['Todas las ventanas completas disponibles se utilizarán en cada grabación.'] = 'Todas as janelas completas disponíveis serão utilizadas em cada gravação.';
     let currentLanguage = localStorage.getItem('machiningAssistantLanguage') || (navigator.language.toLowerCase().startsWith('pt') ? 'pt-PT' : navigator.language.toLowerCase().startsWith('en') ? 'en' : 'es');
     function t(source) { return TRANSLATIONS[currentLanguage]?.[source] || source; }
     function applyLanguage() {
@@ -898,7 +890,6 @@
             import_job_id: selectedImport.job_id,
             model: $('model').value,
             epochs: Number($('epochs').value),
-            windows_per_recording: Number($('windows').value),
             window_duration_ms: Number($('windowDuration').value),
             latent_dim: Number($('latentDim').value),
             batch_size: Number($('batchSize').value),
@@ -1017,7 +1008,6 @@
                 latentDim: '16',
                 device: 'auto',
                 epochs: '60',
-                windows: '300',
                 batchSize: '8',
                 learningRate: '0.001',
                 beta: '0.001',
@@ -1030,7 +1020,6 @@
                 latentDim: '16',
                 device: 'auto',
                 epochs: '60',
-                windows: '128',
                 batchSize: '8',
                 learningRate: '0.001',
                 beta: '0.001',
@@ -1043,7 +1032,6 @@
                 latentDim: '8',
                 device: 'auto',
                 epochs: '40',
-                windows: '128',
                 batchSize: '8',
                 learningRate: '0.0003',
                 beta: '0.001',
@@ -1061,13 +1049,13 @@
 
     function updateConfigHelp() {
         const model = $('model').value, durationMs = Number($('windowDuration').value), epochs = Number($('epochs').value),
-            windows = Number($('windows').value), latent = Number($('latentDim').value), device = $('device').value,
+            latent = Number($('latentDim').value), device = $('device').value,
             batch = Number($('batchSize').value), lr = Number($('learningRate').value), beta = Number($('beta').value),
             evalEvery = Number($('evalEvery').value);
         const sampleCount = Math.max(64, Math.round((durationMs / 1000 * 44100) / 64) * 64);
         const seconds = (sampleCount / 44100 * 1000).toFixed(1);
         const modelText = model === 'cnn' ? t('CNN1D-VAE procesa patrones locales del audio.') : t('LSTM-VAE procesa la evolución temporal de la señal.');
-        $('configHelp').innerHTML = `<strong>${modelText}</strong><br>${t('Ventana solicitada:')} <strong>${durationMs} ms</strong> · ${t('duración compatible:')} <strong>${seconds} ms</strong> · <strong>${sampleCount}</strong> ${t('muestras')} · ${t('latente:')} <strong>${latent}</strong> ${t('dimensiones')} · ${t('épocas máximas:')} <strong>${epochs}</strong> · ${t('ventanas por grabación:')} <strong>${windows}</strong>.<br>${t('Batch')} <strong>${batch}</strong>: ${t('ejemplos por actualización')} · ${t('learning rate')} <strong>${lr}</strong>: ${t('tamaño de paso')} · ${t('beta')} <strong>${beta}</strong>: ${t('regularización VAE')} · ${t('evaluación cada')} <strong>${evalEvery}</strong> ${t('épocas')} · ${t('dispositivo:')} <strong>${esc(device)}</strong>.`;
+        $('configHelp').innerHTML = `<strong>${modelText}</strong><br>${t('Ventana solicitada:')} <strong>${durationMs} ms</strong> · ${t('duración compatible:')} <strong>${seconds} ms</strong> · <strong>${sampleCount}</strong> ${t('muestras')} · ${t('latente:')} <strong>${latent}</strong> ${t('dimensiones')} · ${t('épocas máximas:')} <strong>${epochs}</strong>.<br>${t('Batch')} <strong>${batch}</strong>: ${t('ejemplos por actualización')} · ${t('learning rate')} <strong>${lr}</strong>: ${t('tamaño de paso')} · ${t('beta')} <strong>${beta}</strong>: ${t('regularización VAE')} · ${t('evaluación cada')} <strong>${evalEvery}</strong> ${t('épocas')} · ${t('dispositivo:')} <strong>${esc(device)}</strong>.<br>${t('Todas las ventanas completas disponibles se utilizarán en cada grabación.')}`;
     }
 
     async function loadStorageHealth() {

@@ -28,11 +28,12 @@ from training_support import (
 
 DEFAULTS = {
     'epochs': 3, 'windows_per_recording': 16, 'batch_size': 8,
+    'all_windows': False,
     'sequence_length': 2048, 'latent_dim': 16, 'learning_rate': .001, 'beta': .001,
     'threads': 2, 'seed': 42, 'eval_every': 20, 'test_during_training': True,
     'device': 'auto',
 }
-LOCKED_SETTINGS = ('windows_per_recording', 'batch_size', 'sequence_length', 'latent_dim',
+LOCKED_SETTINGS = ('windows_per_recording', 'all_windows', 'batch_size', 'sequence_length', 'latent_dim',
                    'learning_rate', 'beta', 'seed')
 LOSS_KEYS = ('loss', 'reconstruction_loss', 'kl_loss')
 
@@ -100,6 +101,8 @@ def _parser():
                         help='Full checkpoint to resume, or a legacy weights-only checkpoint to continue')
     parser.add_argument('--epochs', type=int, help='Total target epoch, including epochs already completed')
     parser.add_argument('--windows-per-recording', type=int)
+    parser.add_argument('--all-windows', action=argparse.BooleanOptionalAction, default=None,
+                        help='Use every complete non-overlapping window from each recording')
     parser.add_argument('--batch-size', type=int)
     parser.add_argument('--sequence-length', type=int)
     parser.add_argument('--latent-dim', type=int)
@@ -142,6 +145,9 @@ def _resolve_settings(args, checkpoint, training_state):
     for key in ('data_dir', 'split_csv'):
         settings[key] = str(Path(settings[key]).expanduser().resolve())
     for key in ('epochs', 'windows_per_recording', 'batch_size', 'sequence_length', 'latent_dim', 'threads', 'eval_every'):
+        if key == 'windows_per_recording' and settings['all_windows']:
+            settings[key] = None
+            continue
         if settings[key] < 1:
             raise ValueError(f'{key} must be positive')
     if settings['learning_rate'] <= 0 or settings['beta'] < 0:
@@ -317,8 +323,9 @@ def run_training(*, model_class, config_class, loss_function, engine_class,
     if settings['epochs'] < completed_epoch:
         raise ValueError(f'Target --epochs must be at least completed epoch {completed_epoch}')
     output = prepare_run_directory(args.output_dir, model_family, 'reconstruction')
+    window_limit = None if settings['all_windows'] else settings['windows_per_recording']
     dataset = build_dataset(settings['data_dir'], config.sequence_length,
-                            settings['windows_per_recording'], split_csv=settings['split_csv'])
+                            window_limit, split_csv=settings['split_csv'])
     settings['split_csv'] = dataset['split_csv']
     identity = data_identity(dataset)
     if previous_state is not None and identity != previous_state['data_identity']:
@@ -365,7 +372,7 @@ def run_training(*, model_class, config_class, loss_function, engine_class,
     training_info = {
         'purpose': 'reconstruction_training', 'seed': settings['seed'],
         'split_recordings': split_recording_ids(dataset['split_rows']),
-        'split_csv': dataset['split_csv'], 'windows_per_recording_limit': settings['windows_per_recording'],
+        'split_csv': dataset['split_csv'], 'windows_per_recording_limit': None if settings['all_windows'] else settings['windows_per_recording'],
         'normalizer_fitted_to': 'training_windows_only', 'ignored_recordings': dataset['ignored_recordings'],
         'learning_rate': settings['learning_rate'], 'beta': settings['beta'], 'batch_size': settings['batch_size'],
         'resume_mode': resume_mode, 'resumed_from': str(resume_path) if resume_path else None,

@@ -754,7 +754,6 @@ def start_training(payload: dict) -> dict:
         raise ValueError("model debe ser cnn o lstm")
     allowed = {
         "epochs": {20, 40, 60, 100, 120, 200, 350},
-        "windows_per_recording": {16, 64, 128, 300, 600},
         "window_duration_ms": WINDOW_DURATION_OPTIONS_MS,
         "latent_dim": {8, 16, 32},
         "batch_size": {8, 16, 32},
@@ -770,7 +769,6 @@ def start_training(payload: dict) -> dict:
         return value
 
     epochs = selected("epochs", 20, int)
-    windows = selected("windows_per_recording", 64, int)
     requested_duration_ms = selected("window_duration_ms", 50, int)
     sequence_length, actual_duration_ms = sequence_length_for_duration(requested_duration_ms)
     latent_dim = selected("latent_dim", 16, int)
@@ -789,13 +787,13 @@ def start_training(payload: dict) -> dict:
     script = PROJECT_ROOT / ("CNN1D-VAE" if model == "cnn" else "LSTM-VAE") / "run_demo.py"
     args = [
         str(PYTHON), str(script), "--data-dir", manifest["data_dir"], "--split-csv", manifest["split_csv"],
-        "--output-dir", str(output_dir), "--epochs", str(epochs), "--windows-per-recording", str(windows),
+        "--output-dir", str(output_dir), "--epochs", str(epochs), "--all-windows",
         "--sequence-length", str(sequence_length), "--latent-dim", str(latent_dim),
         "--batch-size", str(batch_size), "--learning-rate", str(learning_rate), "--beta", str(beta),
         "--eval-every", str(eval_every), "--device", device,
     ]
     training_id = f"{job_id}_{model}"
-    job = {"training_id": training_id, "import_job_id": job_id, "model": model, "status": "starting", "args": args[1:], "configuration": {"epochs": epochs, "windows_per_recording": windows, "window_duration_ms": requested_duration_ms, "actual_window_duration_ms": round(actual_duration_ms, 3), "sequence_length": sequence_length, "latent_dim": latent_dim, "batch_size": batch_size, "learning_rate": learning_rate, "beta": beta, "eval_every": eval_every, "device": device}, "started_at": time.time(), "output_dir": str(output_dir), "log_tail": ""}
+    job = {"training_id": training_id, "import_job_id": job_id, "model": model, "status": "starting", "args": args[1:], "configuration": {"all_windows": True, "window_duration_ms": requested_duration_ms, "actual_window_duration_ms": round(actual_duration_ms, 3), "sequence_length": sequence_length, "latent_dim": latent_dim, "batch_size": batch_size, "learning_rate": learning_rate, "beta": beta, "eval_every": eval_every, "device": device}, "started_at": time.time(), "output_dir": str(output_dir), "log_tail": ""}
     with _jobs_lock:
         _jobs[training_id] = job
     threading.Thread(target=train_worker, args=(training_id, args, output_dir), daemon=True).start()

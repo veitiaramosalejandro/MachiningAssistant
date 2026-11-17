@@ -52,23 +52,23 @@ def read_wav(path: str | Path) -> tuple[int, np.ndarray]:
 def select_window_starts(
     frame_count: int,
     sequence_length: int = 2048,
-    max_windows_per_recording: int = 16,
+    max_windows_per_recording: int | None = 16,
 ) -> np.ndarray:
     """Select evenly spaced complete windows from a nonoverlapping grid.
 
-    A positive cap is mandatory: zero does not mean "load every window".
+    When the cap is ``None``, every complete window is selected.
     The final incomplete window is excluded.
     """
     if sequence_length < 1:
         raise ValueError("sequence_length must be a positive integer")
-    if max_windows_per_recording < 1:
+    if max_windows_per_recording is not None and max_windows_per_recording < 1:
         raise ValueError("max_windows_per_recording must be a positive integer")
     window_count = frame_count // sequence_length
     if window_count < 1:
         raise ValueError(
             f"Recording has {frame_count} frames, fewer than sequence_length={sequence_length}"
         )
-    selected_count = min(window_count, max_windows_per_recording)
+    selected_count = window_count if max_windows_per_recording is None else min(window_count, max_windows_per_recording)
     indices = np.linspace(0, window_count - 1, num=selected_count, dtype=np.int64)
     return indices * sequence_length
 
@@ -76,10 +76,12 @@ def select_window_starts(
 def build_dataset(
     source: str | Path = DEFAULT_SOURCE,
     sequence_length: int = 2048,
-    max_windows_per_recording: int = 16,
+    max_windows_per_recording: int | None = 16,
     split_csv: str | Path | None = None,
 ) -> dict:
-    """Reread the split CSV and load a capped set of windows per selected recording.
+    """Reread the split CSV and load selected complete windows per recording.
+
+    ``max_windows_per_recording=None`` loads every complete window.
 
     Each split contains ``x`` (float32 [N, T, 2]) and matching ``windows``.
     ``manifest`` records the original metadata, actual WAV length, and split.
@@ -90,7 +92,7 @@ def build_dataset(
     source = Path(source).resolve()
     if not source.is_dir():
         raise FileNotFoundError(f"Dataset directory not found: {source}")
-    if sequence_length < 1 or max_windows_per_recording < 1:
+    if sequence_length < 1 or (max_windows_per_recording is not None and max_windows_per_recording < 1):
         raise ValueError("sequence_length and max_windows_per_recording must be positive")
 
     split_path = (Path(split_csv) if split_csv is not None else DEFAULT_SPLIT_CSV).resolve()
