@@ -935,8 +935,8 @@ def main() -> int:
     import argparse
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--host", default=os.environ.get("MACHINING_WEB_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.environ.get("MACHINING_WEB_PORT", "8765")))
+    parser.add_argument("--host", default=setting("MACHINING_WEB_HOST", "0.0.0.0"))
+    parser.add_argument("--port", type=int, default=int(setting("MACHINING_WEB_PORT", "8765")))
     args = parser.parse_args()
     if not WEB_ROOT.is_dir() or not (WEB_ROOT / "index.html").is_file():
         raise SystemExit(f"Missing web assets: {WEB_ROOT}")

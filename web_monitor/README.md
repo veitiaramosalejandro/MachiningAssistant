@@ -20,7 +20,14 @@ Si se omite `MACHINING_MONITOR_DATA_ROOT`, se usa esa ruta por defecto relativa 
 & .venv\Scripts\python.exe web_monitor.py
 ```
 
-Abrir `http://127.0.0.1:8765`.
+El monitor escucha por defecto en todas las interfaces (`0.0.0.0:8765`). Desde
+otra máquina de la red, abrir `http://IP_DEL_EQUIPO:8765`, sustituyendo la IP
+por la dirección IPv4 del equipo donde se ejecuta el proyecto.
+
+Si Windows Firewall bloquea el puerto, hay que permitir explícitamente TCP
+8765 para la red privada. No se recomienda publicar este puerto directamente
+en Internet: el monitor todavía no tiene autenticación propia para sus
+endpoints de importación y entrenamiento.
 
 ## Persistencia PostgreSQL + Qdrant
 
