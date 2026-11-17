@@ -9,6 +9,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import math
 import mimetypes
 import os
 from pathlib import Path
@@ -409,6 +410,137 @@ def train_worker(job_id: str, args: list[str], output_dir: Path) -> None:
         _jobs[job_id].update({"status": "completed" if return_code == 0 else "failed", "return_code": return_code, "finished_at": time.time()})
 
 
+def _read_json_file(path: Path, default):
+    try:
+        return json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return default
+
+
+def _context_at(context_doc: dict, metadata: dict, timestamp_s: float) -> dict:
+    entries = context_doc.get("contexts", []) if isinstance(context_doc, dict) else []
+    candidates = [item for item in entries if isinstance(item, dict) and float(item.get("timestamp_seconds", 0) or 0) <= timestamp_s]
+    selected = max(candidates, key=lambda item: float(item.get("timestamp_seconds", 0) or 0)) if candidates else None
+    context = selected.get("context", {}) if selected else metadata.get("Context", {})
+    if not isinstance(context, dict):
+        context = {}
+    tool = context.get("Tool", {})
+    parameters = context.get("Parameters", {})
+    if not isinstance(tool, dict):
+        tool = {"name": str(tool)} if tool else {}
+    if not isinstance(parameters, dict):
+        parameters = {}
+    spindle = parameters.get("SpindleSpeed", {})
+    feed = parameters.get("FeedRate", {})
+    if not isinstance(spindle, dict):
+        spindle = {}
+    if not isinstance(feed, dict):
+        feed = {}
+    return {
+        "operation": context.get("Operation"),
+        "work": context.get("Work"),
+        "part": context.get("Part"),
+        "material": context.get("PartMaterial"),
+        "tool": tool.get("Tool") or tool.get("name"),
+        "tool_type": tool.get("Type"),
+        "rpm": spindle.get("AdjustedRpm") or spindle.get("ProgrammedRpm"),
+        "feed_rate": feed.get("AdjustedMmPerMin") or feed.get("ProgrammedMmPerMin"),
+        "context_timestamp_s": selected.get("timestamp_seconds") if selected else None,
+    }
+
+
+def _training_result(output_dir: Path) -> dict:
+    report = _read_json_file(output_dir / "test_report.json", {})
+    config = _read_json_file(output_dir / "training_config.json", {})
+    data_dir = Path(config.get("data_dir", ""))
+    metadata_cache = {}
+    context_cache = {}
+    events_cache = {}
+    playback_cache = {}
+
+    def recording_context(recording_id: str) -> tuple[dict, dict, list, dict]:
+        if recording_id not in metadata_cache:
+            folder = data_dir / recording_id
+            metadata_cache[recording_id] = _read_json_file(folder / "metadata.json", {})
+            context_cache[recording_id] = _read_json_file(folder / "contexts.json", {})
+            event_doc = _read_json_file(folder / "events.json", {})
+            events_cache[recording_id] = event_doc.get("annotations", []) if isinstance(event_doc, dict) else []
+            playback_cache[recording_id] = _read_json_file(folder / "playback.json", {})
+        return metadata_cache[recording_id], context_cache[recording_id], events_cache[recording_id], playback_cache[recording_id]
+
+    rows = []
+    prediction_path = output_dir / "window_predictions.csv"
+    if prediction_path.is_file():
+        with prediction_path.open(encoding="utf-8-sig", newline="") as handle:
+            for row in csv.DictReader(handle):
+                try:
+                    start_s = float(row.get("start_s", 0))
+                    end_s = float(row.get("end_s", start_s))
+                    score = float(row.get("trained_mse_standardized", "nan"))
+                except (TypeError, ValueError):
+                    continue
+                recording_id = row.get("recording_id", "")
+                metadata, context_doc, events, playback = recording_context(recording_id)
+                playback_offset_ms = float(playback.get("AudioOffsetMs", 0) or 0) if isinstance(playback, dict) else 0
+                context_time_s = (start_s + end_s) / 2 + playback_offset_ms / 1000
+                overlap_events = []
+                for event in events:
+                    if not isinstance(event, dict):
+                        continue
+                    try:
+                        event_s = float(event.get("timestamp_seconds", 0) or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if start_s <= event_s <= end_s:
+                        overlap_events.append({
+                            "timestamp_seconds": event_s,
+                            "quality": event.get("quality"),
+                            "machine_state": event.get("machine_state_label") or event.get("machine_state"),
+                            "observations": event.get("observations"),
+                        })
+                enriched = {
+                    "recording_id": recording_id,
+                    "source_recording_id": row.get("source_recording_id"),
+                    "split": row.get("split"),
+                    "start_s": start_s,
+                    "end_s": end_s,
+                    "score": score,
+                    "operation_context": _context_at(context_doc, metadata, context_time_s),
+                    "events": overlap_events,
+                    "playback_offset_ms": playback_offset_ms,
+                    "source_start_seconds": (metadata.get("SourceRecording") or {}).get("StartSeconds") if isinstance(metadata.get("SourceRecording"), dict) else None,
+                    "recording_start": metadata.get("StartTime"),
+                }
+                rows.append(enriched)
+    finite_rows = [row for row in rows if math.isfinite(row["score"])]
+    train_scores = sorted(row["score"] for row in finite_rows if row["split"] == "train")
+    threshold = train_scores[min(len(train_scores) - 1, int(len(train_scores) * 0.99))] if train_scores else None
+    for row in finite_rows:
+        row["above_train_p99"] = threshold is not None and row["score"] > threshold
+    top_windows = sorted(finite_rows, key=lambda row: row["score"], reverse=True)[:100]
+    context_counts = {}
+    for row in finite_rows:
+        operation = row["operation_context"].get("operation") or "Sin contexto"
+        bucket = context_counts.setdefault(operation, {"operation": operation, "windows": 0, "max_score": 0.0, "mean_score": 0.0})
+        bucket["windows"] += 1
+        bucket["max_score"] = max(bucket["max_score"], row["score"])
+        bucket["mean_score"] += row["score"]
+    for bucket in context_counts.values():
+        bucket["mean_score"] /= bucket["windows"]
+    return {
+        "report": report,
+        "history": report.get("history", []),
+        "baseline": report.get("mean_reconstruction_baseline_mse", {}),
+        "best_epoch": report.get("best_epoch"),
+        "best_checkpoint": report.get("best_checkpoint"),
+        "score_reference_train_p99": threshold,
+        "score_reference_note": "Referencia estadística del train; no es un umbral operativo calibrado.",
+        "context_counts": sorted(context_counts.values(), key=lambda item: item["max_score"], reverse=True),
+        "top_windows": top_windows,
+        "window_count": len(finite_rows),
+    }
+
+
 def start_training(payload: dict) -> dict:
     job_id = str(payload.get("import_job_id", ""))
     if not job_id or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for ch in job_id):
@@ -512,6 +644,20 @@ class Handler(BaseHTTPRequestHandler):
                     if history.is_file():
                         job["history"] = history.read_text(encoding="utf-8-sig")[-12000:]
                 self.send_json(job)
+                return
+            if parsed.path == "/api/training/result":
+                training_id = parse_qs(parsed.query).get("training_id", [""])[0]
+                with _jobs_lock:
+                    job = dict(_jobs.get(training_id, {}))
+                output_dir = Path(job.get("output_dir", "")) if job.get("output_dir") else None
+                if output_dir is None or not output_dir.is_dir():
+                    model = training_id.rsplit("_", 1)[-1]
+                    job_id = training_id[:-(len(model) + 1)] if model in ("cnn", "lstm") else ""
+                    if job_id:
+                        output_dir = RUNS_ROOT / job_id / "training" / model
+                if output_dir is None or not output_dir.is_dir():
+                    raise FileNotFoundError("No existe el directorio del entrenamiento")
+                self.send_json(_training_result(output_dir))
                 return
             self.send_json({"error": "not_found"}, 404)
         except Exception as exc:

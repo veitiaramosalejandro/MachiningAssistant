@@ -22,7 +22,7 @@ from Dataset.Preprocessing.dataset_splits import SPLIT_NAMES, split_recording_id
 from device_support import resolve_device
 from training_support import (
     atomic_json, atomic_torch_save, capture_rng_state, clone_model_state,
-    prepare_run_directory, restore_rng_state,
+    prepare_run_directory, restore_rng_state, _replace_with_retry, _temporary_path,
 )
 
 
@@ -58,12 +58,20 @@ def atomic_csv(path, rows):
     if not rows:
         return
     path = Path(path)
-    temporary = path.with_name(path.name+'.tmp')
-    with temporary.open('w', newline='', encoding='utf-8-sig') as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
-        writer.writeheader()
-        writer.writerows(rows)
-    temporary.replace(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = _temporary_path(path)
+    try:
+        with temporary.open('w', newline='', encoding='utf-8-sig') as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows)
+        _replace_with_retry(temporary, path)
+    finally:
+        # Do not leave a stale temporary file if Windows keeps the target locked.
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def data_identity(dataset):
