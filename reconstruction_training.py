@@ -28,11 +28,11 @@ from training_support import (
 
 DEFAULTS = {
     'epochs': 3, 'windows_per_recording': 16, 'batch_size': 8,
-    'sequence_length': 2048, 'learning_rate': .001, 'beta': .001,
+    'sequence_length': 2048, 'latent_dim': 16, 'learning_rate': .001, 'beta': .001,
     'threads': 2, 'seed': 42, 'eval_every': 20, 'test_during_training': True,
     'device': 'auto',
 }
-LOCKED_SETTINGS = ('windows_per_recording', 'batch_size', 'sequence_length',
+LOCKED_SETTINGS = ('windows_per_recording', 'batch_size', 'sequence_length', 'latent_dim',
                    'learning_rate', 'beta', 'seed')
 LOSS_KEYS = ('loss', 'reconstruction_loss', 'kl_loss')
 
@@ -102,6 +102,7 @@ def _parser():
     parser.add_argument('--windows-per-recording', type=int)
     parser.add_argument('--batch-size', type=int)
     parser.add_argument('--sequence-length', type=int)
+    parser.add_argument('--latent-dim', type=int)
     parser.add_argument('--learning-rate', type=float)
     parser.add_argument('--beta', type=float)
     parser.add_argument('--threads', type=int)
@@ -121,6 +122,7 @@ def _resolve_settings(args, checkpoint, training_state):
     elif checkpoint is not None:
         info = checkpoint.get('training_info', {})
         inherited['sequence_length'] = checkpoint['model_config']['sequence_length']
+        inherited['latent_dim'] = checkpoint['model_config'].get('latent_dim', 16)
         inherited['epochs'] = int(info.get('epochs', 0))
         for key in ('seed', 'learning_rate', 'beta', 'batch_size'):
             if key in info:
@@ -139,7 +141,7 @@ def _resolve_settings(args, checkpoint, training_state):
         settings[key] = explicit
     for key in ('data_dir', 'split_csv'):
         settings[key] = str(Path(settings[key]).expanduser().resolve())
-    for key in ('epochs', 'windows_per_recording', 'batch_size', 'sequence_length', 'threads', 'eval_every'):
+    for key in ('epochs', 'windows_per_recording', 'batch_size', 'sequence_length', 'latent_dim', 'threads', 'eval_every'):
         if settings[key] < 1:
             raise ValueError(f'{key} must be positive')
     if settings['learning_rate'] <= 0 or settings['beta'] < 0:
@@ -306,7 +308,8 @@ def run_training(*, model_class, config_class, loss_function, engine_class,
         raise ValueError('Checkpoint sampling rate does not match the 44100 Hz reconstruction task')
     previous_state = checkpoint.get('training_state') if checkpoint is not None else None
     settings = _resolve_settings(args, checkpoint, previous_state)
-    config = config_class(**checkpoint['model_config']) if checkpoint is not None else config_class(sequence_length=settings['sequence_length'])
+    config = (config_class(**checkpoint['model_config']) if checkpoint is not None else
+              config_class(sequence_length=settings['sequence_length'], latent_dim=settings['latent_dim']))
     if config.sequence_length != settings['sequence_length']:
         raise ValueError('Checkpoint model configuration differs from requested sequence_length')
     completed_epoch = (int(previous_state['completed_epoch']) if previous_state is not None else

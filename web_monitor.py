@@ -548,10 +548,32 @@ def start_training(payload: dict) -> dict:
     model = str(payload.get("model", "cnn")).lower()
     if model not in {"cnn", "lstm"}:
         raise ValueError("model debe ser cnn o lstm")
-    epochs = int(payload.get("epochs", 3))
-    windows = int(payload.get("windows_per_recording", 16))
-    if not 1 <= epochs <= 1000 or not 1 <= windows <= 10000:
-        raise ValueError("epochs/windows_per_recording fuera de rango")
+    allowed = {
+        "epochs": {20, 40, 60, 100, 120, 200, 350},
+        "windows_per_recording": {16, 64, 128, 300, 600},
+        "sequence_length": {2048, 8192, 16384},
+        "latent_dim": {8, 16, 32},
+        "batch_size": {8, 16, 32},
+        "learning_rate": {0.0003, 0.001},
+        "beta": {0.0001, 0.001, 0.01},
+        "eval_every": {5, 10, 20},
+        "device": {"auto", "cuda", "cpu"},
+    }
+    def selected(name: str, default, converter):
+        value = converter(payload.get(name, default))
+        if value not in allowed[name]:
+            raise ValueError(f"{name} no está entre las opciones permitidas")
+        return value
+
+    epochs = selected("epochs", 20, int)
+    windows = selected("windows_per_recording", 64, int)
+    sequence_length = selected("sequence_length", 2048, int)
+    latent_dim = selected("latent_dim", 16, int)
+    batch_size = selected("batch_size", 8, int)
+    learning_rate = selected("learning_rate", 0.001, float)
+    beta = selected("beta", 0.001, float)
+    eval_every = selected("eval_every", 10, int)
+    device = selected("device", "auto", str)
     root = RUNS_ROOT / job_id
     manifest_path = root / "import_manifest.json"
     if not manifest_path.is_file():
@@ -560,9 +582,15 @@ def start_training(payload: dict) -> dict:
     output_dir = root / "training" / model
     output_dir.mkdir(parents=True, exist_ok=False)
     script = PROJECT_ROOT / ("CNN1D-VAE" if model == "cnn" else "LSTM-VAE") / "run_demo.py"
-    args = [str(PYTHON), str(script), "--data-dir", manifest["data_dir"], "--split-csv", manifest["split_csv"], "--output-dir", str(output_dir), "--epochs", str(epochs), "--windows-per-recording", str(windows), "--device", "auto"]
+    args = [
+        str(PYTHON), str(script), "--data-dir", manifest["data_dir"], "--split-csv", manifest["split_csv"],
+        "--output-dir", str(output_dir), "--epochs", str(epochs), "--windows-per-recording", str(windows),
+        "--sequence-length", str(sequence_length), "--latent-dim", str(latent_dim),
+        "--batch-size", str(batch_size), "--learning-rate", str(learning_rate), "--beta", str(beta),
+        "--eval-every", str(eval_every), "--device", device,
+    ]
     training_id = f"{job_id}_{model}"
-    job = {"training_id": training_id, "import_job_id": job_id, "model": model, "status": "starting", "args": [str(script), "--model", model, "--epochs", str(epochs)], "started_at": time.time(), "output_dir": str(output_dir), "log_tail": ""}
+    job = {"training_id": training_id, "import_job_id": job_id, "model": model, "status": "starting", "args": args[1:], "configuration": {"epochs": epochs, "windows_per_recording": windows, "sequence_length": sequence_length, "latent_dim": latent_dim, "batch_size": batch_size, "learning_rate": learning_rate, "beta": beta, "eval_every": eval_every, "device": device}, "started_at": time.time(), "output_dir": str(output_dir), "log_tail": ""}
     with _jobs_lock:
         _jobs[training_id] = job
     threading.Thread(target=train_worker, args=(training_id, args, output_dir), daemon=True).start()
