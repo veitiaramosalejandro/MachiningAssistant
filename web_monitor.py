@@ -869,6 +869,7 @@ def start_training(payload: dict) -> dict:
         "learning_rate": {0.0001, 0.0003, 0.001},
         "beta": {0.0001, 0.001, 0.01},
         "eval_every": {5, 10, 20},
+        "early_stopping_patience": {0, 3, 5, 10, 15},
         "device": {"auto", "cuda", "cpu"},
     }
     def selected(name: str, default, converter):
@@ -885,6 +886,7 @@ def start_training(payload: dict) -> dict:
     learning_rate = selected("learning_rate", 0.0003, float)
     beta = selected("beta", 0.001, float)
     eval_every = selected("eval_every", 10, int)
+    early_stopping_patience = selected("early_stopping_patience", 5, int)
     device = selected("device", "auto", str)
     root = RUNS_ROOT / job_id
     manifest_path = root / "import_manifest.json"
@@ -901,9 +903,10 @@ def start_training(payload: dict) -> dict:
         "--batch-size", str(batch_size), "--learning-rate", str(learning_rate), "--beta", str(beta),
         "--logvar-min", "-8", "--logvar-max", "8",
         "--eval-every", str(eval_every), "--device", device,
+        "--early-stopping-patience", str(early_stopping_patience),
     ]
     training_id = f"{job_id}_{model}"
-    job = {"training_id": training_id, "import_job_id": job_id, "model": model, "status": "starting", "args": args[1:], "configuration": {"all_windows": True, "window_duration_ms": requested_duration_ms, "actual_window_duration_ms": round(actual_duration_ms, 3), "sequence_length": sequence_length, "latent_dim": latent_dim, "batch_size": batch_size, "learning_rate": learning_rate, "beta": beta, "logvar_min": -8.0, "logvar_max": 8.0, "eval_every": eval_every, "device": device}, "started_at": time.time(), "output_dir": str(output_dir), "log_tail": ""}
+    job = {"training_id": training_id, "import_job_id": job_id, "model": model, "status": "starting", "args": args[1:], "configuration": {"all_windows": True, "window_duration_ms": requested_duration_ms, "actual_window_duration_ms": round(actual_duration_ms, 3), "sequence_length": sequence_length, "latent_dim": latent_dim, "batch_size": batch_size, "learning_rate": learning_rate, "beta": beta, "logvar_min": -8.0, "logvar_max": 8.0, "eval_every": eval_every, "early_stopping_patience": early_stopping_patience, "device": device}, "started_at": time.time(), "output_dir": str(output_dir), "log_tail": ""}
     with _jobs_lock:
         _jobs[training_id] = job
     threading.Thread(target=train_worker, args=(training_id, args, output_dir), daemon=True).start()

@@ -3,10 +3,16 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
+import unicodedata
 
 
 SPLIT_NAMES = ("train", "val", "test")
 CSV_FIELDS = ("recording_id", "source_recording_id", "split")
+
+
+def normalize_identifier(value: str) -> str:
+    """Use one Unicode form for CSV identifiers and filesystem folder names."""
+    return unicodedata.normalize("NFC", str(value).strip())
 
 
 def read_split_csv(path: str | Path) -> list[dict[str, str]]:

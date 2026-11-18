@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import random
 import time
@@ -32,10 +33,12 @@ DEFAULTS = {
     'sequence_length': 2048, 'latent_dim': 16, 'learning_rate': .0003, 'beta': .001,
     'logvar_min': -8., 'logvar_max': 8.,
     'threads': 2, 'seed': 42, 'eval_every': 20, 'test_during_training': True,
+    'early_stopping_patience': 5, 'early_stopping_min_delta': .0001,
     'device': 'auto',
 }
 LOCKED_SETTINGS = ('windows_per_recording', 'all_windows', 'batch_size', 'sequence_length', 'latent_dim',
-                   'learning_rate', 'beta', 'logvar_min', 'logvar_max', 'seed')
+                   'learning_rate', 'beta', 'logvar_min', 'logvar_max', 'seed',
+                   'early_stopping_patience', 'early_stopping_min_delta')
 LOSS_KEYS = ('loss', 'reconstruction_loss', 'kl_loss')
 
 
@@ -115,6 +118,10 @@ def _parser():
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda'])
     parser.add_argument('--seed', type=int)
     parser.add_argument('--eval-every', type=int, help='Validation/test evaluation interval; default 20')
+    parser.add_argument('--early-stopping-patience', type=int,
+                        help='Validation evaluations without improvement before stopping; 0 disables it')
+    parser.add_argument('--early-stopping-min-delta', type=float,
+                        help='Minimum validation MSE improvement required to reset patience')
     parser.add_argument('--test-during-training', action=argparse.BooleanOptionalAction, default=None,
                         help='Observe test metrics at evaluation epochs; only validation selects best (default: enabled)')
     return parser
@@ -158,6 +165,8 @@ def _resolve_settings(args, checkpoint, training_state):
             raise ValueError(f'{key} must be positive')
     if settings['learning_rate'] <= 0 or settings['beta'] < 0:
         raise ValueError('learning_rate must be positive and beta must be nonnegative')
+    if settings['early_stopping_patience'] < 0 or settings['early_stopping_min_delta'] < 0:
+        raise ValueError('early-stopping patience and min-delta must be nonnegative')
     if (settings['logvar_min'] is None) != (settings['logvar_max'] is None):
         raise ValueError('logvar_min and logvar_max must be set together')
     if settings['logvar_min'] is not None and settings['logvar_min'] >= settings['logvar_max']:
@@ -186,6 +195,55 @@ def _history_files(output, history):
     atomic_csv(output/'training_history.csv', history)
 
 
+def _stable_hash(value) -> str:
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)
+    return hashlib.sha256(payload.encode('utf-8')).hexdigest()
+
+
+def _code_version() -> str:
+    """Fingerprint the training implementation used for the run."""
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
+def _training_stability(history: list[dict], resource_history: list[dict] | None = None) -> dict:
+    finite_rows = [row for row in history if all(
+        isinstance(row.get(key), (int, float)) and np.isfinite(row[key])
+        for key in ('train_reconstruction_loss', 'seconds')
+    )]
+    evaluated = [row for row in finite_rows if row.get('validation_evaluated')]
+    validation_values = [float(row['val_reconstruction_loss']) for row in evaluated
+                         if isinstance(row.get('val_reconstruction_loss'), (int, float))
+                         and np.isfinite(row['val_reconstruction_loss'])]
+    gradients = [float(row['gradient_norm']) for row in finite_rows
+                 if isinstance(row.get('gradient_norm'), (int, float)) and np.isfinite(row['gradient_norm'])]
+    resources = resource_history or []
+    return {
+        'history_rows': len(history),
+        'finite_history_rows': len(finite_rows),
+        'non_finite_history_rows': len(history) - len(finite_rows),
+        'validation_evaluations': len(validation_values),
+        'validation_best_mse': min(validation_values) if validation_values else None,
+        'validation_last_mse': validation_values[-1] if validation_values else None,
+        'validation_improved': bool(validation_values and validation_values[-1] <= validation_values[0]),
+        'gradient_norm_max': max(gradients) if gradients else None,
+        'gradient_norm_mean': float(np.mean(gradients)) if gradients else None,
+        'stable': len(finite_rows) == len(history) and not any(value < 0 for value in gradients),
+        'total_wall_seconds': float(sum(float(row['seconds']) for row in finite_rows)),
+        'peak_cuda_memory_allocated_mb': max(
+            (float(row.get('cuda_peak_memory_allocated_mb') or 0.) for row in resources), default=0.
+        ),
+        'peak_cuda_memory_reserved_mb': max(
+            (float(row.get('cuda_peak_memory_reserved_mb') or 0.) for row in resources), default=0.
+        ),
+        'resource_measurements': len(resources),
+    }
+
+
+def _parameter_norm(model) -> float:
+    values = [parameter.detach().float().norm(2).item() for parameter in model.parameters()]
+    return float(np.sqrt(np.sum(np.square(values)))) if values else 0.0
+
+
 def _on_interrupt(output):
     latest = torch.load(output/'last.pt', map_location='cpu', weights_only=True)
     epoch = latest['training_state']['completed_epoch']
@@ -200,7 +258,7 @@ def _engineering_outputs(output, dataset, tensors, model, config, initial_state,
                          settings, loss_function, model_class, engine_class, streaming_class,
                          model_family, completed_epoch, start_epoch, cumulative_seconds,
                          previous_seconds, history, best_metric, best_epoch, initial_status,
-                         baseline_kind, initial_epoch, resume_mode, resume_path):
+                         baseline_kind, initial_epoch, resume_mode, resume_path, resource_history):
     """Generate the existing final inference artifacts without affecting saved training RNG."""
     device = next(model.parameters()).device.type
     initial_model = model_class(config)
@@ -210,10 +268,22 @@ def _engineering_outputs(output, dataset, tensors, model, config, initial_state,
     engine = engine_class(config, norm, model, 'smoke_trained_not_validated',
                          'fit_on_selected_train_windows_only', device=device)
     reloaded = engine_class.from_checkpoint(output/'final.pt', device=device)
+    best_reloaded = engine_class.from_checkpoint(output/'best.pt', device=device)
     before = {split: evaluate(initial.model, tensors[split], settings['batch_size'],
                               settings['beta'], loss_function) for split in SPLIT_NAMES}
     after = {split: evaluate(reloaded.model, tensors[split], settings['batch_size'],
                              settings['beta'], loss_function) for split in SPLIT_NAMES}
+    best_after = {split: evaluate(best_reloaded.model, tensors[split], settings['batch_size'],
+                                  settings['beta'], loss_function) for split in SPLIT_NAMES}
+    evaluated_validation = []
+    for row in history:
+        value = row.get('val_reconstruction_loss')
+        if row.get('validation_evaluated') and isinstance(value, (int, float)) and np.isfinite(value):
+            evaluated_validation.append(float(value))
+    selection_verified = bool(evaluated_validation and best_metric is not None and
+                              abs(min(evaluated_validation) - float(best_after['val']['reconstruction_loss'])) <= 1e-5)
+    if not selection_verified:
+        raise AssertionError('Best checkpoint does not match the minimum validation reconstruction MSE')
     raw = dataset['test']['x'][:2]
     prediction = engine.predict_windows(raw)
     replay = reloaded.predict_windows(raw)
@@ -292,6 +362,23 @@ def _engineering_outputs(output, dataset, tensors, model, config, initial_state,
         'model_selection': 'Minimum validation reconstruction MSE; test measurements never select best.',
         'best_epoch': best_epoch, 'best_validation_reconstruction_mse': best_metric,
         'best_checkpoint': str(output/'best.pt'), 'final_checkpoint': str(output/'final.pt'),
+        'best_checkpoint_evaluation': best_after,
+        'best_checkpoint_selection_verified': selection_verified,
+        'stability': _training_stability(history, resource_history),
+        'resource_history': resource_history,
+        'early_stopping': {
+            'patience': settings['early_stopping_patience'],
+            'min_delta': settings['early_stopping_min_delta'],
+            'no_improve_evaluations': history[-1].get('early_stopping_no_improve', 0) if history else 0,
+            'stop_reason': history[-1].get('stop_reason') if history else None,
+        },
+        'dataset_version': _stable_hash(data_identity(dataset)),
+        'configuration_hash': _stable_hash({
+            'model_family': model_family, 'model_config': asdict(config),
+            'settings': {key: settings[key] for key in DEFAULTS},
+            'dataset_version': _stable_hash(data_identity(dataset)),
+        }),
+        'code_version': _code_version(),
         'mean_reconstruction_baseline_mse': {split: float((value**2).mean()) for split, value in tensors.items()},
         'verified_prediction_windows': len(sample_predictions),
         'checkpoint_max_abs_replay_delta_pcm': reload_delta,
@@ -341,6 +428,15 @@ def run_training(*, model_class, config_class, loss_function, engine_class,
                             window_limit, split_csv=settings['split_csv'])
     settings['split_csv'] = dataset['split_csv']
     identity = data_identity(dataset)
+    dataset_version = _stable_hash(identity)
+    configuration_fingerprint = {
+        'model_family': model_family,
+        'model_config': asdict(config),
+        'settings': {key: settings[key] for key in DEFAULTS},
+        'dataset_version': dataset_version,
+    }
+    configuration_hash = _stable_hash(configuration_fingerprint)
+    code_version = _code_version()
     if previous_state is not None and identity != previous_state['data_identity']:
         raise ValueError('Resume data identity mismatch: active CSV assignments, recording metadata, or ordered windows changed')
     if checkpoint is not None and previous_state is None:
@@ -372,7 +468,10 @@ def run_training(*, model_class, config_class, loss_function, engine_class,
         if previous_state.get('scheduler_state_dict'):
             scheduler.load_state_dict(previous_state['scheduler_state_dict'])
         history = deepcopy(previous_state['history'])
+        resource_history = deepcopy(previous_state.get('resource_history', []))
         best_metric, best_epoch = previous_state['best_metric'], previous_state['best_epoch']
+        early_stopping_no_improve = int(previous_state.get('early_stopping_no_improve', 0))
+        stop_reason = previous_state.get('stop_reason')
         best_state = deepcopy(previous_state['best_state_dict'])
         initial_state = deepcopy(previous_state['initial_state_dict'])
         initial_status = previous_state['initial_model_status']
@@ -382,6 +481,8 @@ def run_training(*, model_class, config_class, loss_function, engine_class,
         print(f'Full-state resume after epoch {completed_epoch}.', flush=True)
     else:
         history = []; best_metric = None; best_epoch = None; best_state = None
+        resource_history = []
+        early_stopping_no_improve = 0; stop_reason = None
         initial_state = clone_model_state(model)
         initial_status = checkpoint['model_status'] if checkpoint is not None else 'untrained'
         baseline_kind = 'continuation_start' if checkpoint is not None else 'random_initialization'
@@ -391,6 +492,7 @@ def run_training(*, model_class, config_class, loss_function, engine_class,
         if checkpoint is not None:
             print(f'Weights-only continuation / optimizer reset after epoch {completed_epoch}.', flush=True)
     start_epoch, previous_seconds = completed_epoch, cumulative_seconds
+    stop_reason = None
     training_info = {
         'purpose': 'reconstruction_training', 'seed': settings['seed'],
         'split_recordings': split_recording_ids(dataset['split_rows']),
@@ -398,6 +500,11 @@ def run_training(*, model_class, config_class, loss_function, engine_class,
         'normalizer_fitted_to': 'training_windows_only', 'ignored_recordings': dataset['ignored_recordings'],
         'learning_rate': settings['learning_rate'], 'beta': settings['beta'], 'batch_size': settings['batch_size'],
         'logvar_min': settings['logvar_min'], 'logvar_max': settings['logvar_max'],
+        'early_stopping_patience': settings['early_stopping_patience'],
+        'early_stopping_min_delta': settings['early_stopping_min_delta'],
+        'dataset_version': dataset_version, 'configuration_hash': configuration_hash,
+        'code_version': code_version,
+        'resume_policy': 'full checkpoint requires identical locked settings and data identity; weights-only continuation resets optimizer state',
         'resume_mode': resume_mode, 'resumed_from': str(resume_path) if resume_path else None,
         'device': str(device),
     }
@@ -417,6 +524,8 @@ def run_training(*, model_class, config_class, loss_function, engine_class,
                 'scheduler_state_dict': scheduler.state_dict(),
                 'rng_state': capture_rng_state({'loader': generator}, device=device),
                 'history': history, 'best_metric': best_metric, 'best_epoch': best_epoch,
+                'resource_history': resource_history,
+                'early_stopping_no_improve': early_stopping_no_improve, 'stop_reason': stop_reason,
                 'best_state_dict': best_state, 'initial_state_dict': initial_state,
                 'initial_model_status': initial_status, 'baseline_kind': baseline_kind, 'initial_epoch': initial_epoch,
                 'settings': dict(settings), 'data_identity': identity,
@@ -428,9 +537,12 @@ def run_training(*, model_class, config_class, loss_function, engine_class,
 
     atomic_json(dataset['manifest'], output/'data_manifest.json')
     atomic_json(dataset['ignored_recordings'], output/'ignored_recordings.json')
+    atomic_json(dataset['quality_report'], output/'data_quality_report.json')
     atomic_json({split: dataset[split]['windows'] for split in SPLIT_NAMES}, output/'window_manifest.json')
     write_split_csv(output/'dataset_splits_used.csv', dataset['split_rows'])
     atomic_json({**settings, 'model_family': model_family, 'model_config': asdict(config),
+                 'dataset_version': dataset_version, 'configuration_hash': configuration_hash,
+                 'code_version': code_version,
                  'resume_mode': resume_mode, 'resumed_from': str(resume_path) if resume_path else None,
                  'best_selection': 'validation reconstruction MSE only'}, output/'training_config.json')
     baseline_payload = payload(initial_epoch, initial_state, initial_status, include_training_state=False)
@@ -461,7 +573,11 @@ def run_training(*, model_class, config_class, loss_function, engine_class,
     try:
         for epoch in range(completed_epoch+1, settings['epochs']+1):
             started = time.perf_counter()
+            process_started = time.process_time()
+            if device.type == 'cuda':
+                torch.cuda.reset_peak_memory_stats(device)
             model.train(); sums = {key: 0. for key in LOSS_KEYS}; count = 0
+            gradient_sum = 0.; gradient_max = 0.; gradient_count = 0
             for (batch,) in loader:
                 batch = batch.to(device)
                 optimizer.zero_grad(set_to_none=True)
@@ -469,8 +585,11 @@ def run_training(*, model_class, config_class, loss_function, engine_class,
                 if any(not torch.isfinite(value).all() for value in terms.values()):
                     raise RuntimeError('Non-finite training loss component')
                 terms['loss'].backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 5., error_if_nonfinite=True)
+                gradient_norm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), 5., error_if_nonfinite=True))
+                if not np.isfinite(gradient_norm):
+                    raise RuntimeError('Non-finite gradient norm')
                 optimizer.step()
+                gradient_sum += gradient_norm; gradient_max = max(gradient_max, gradient_norm); gradient_count += 1
                 for key in sums:
                     sums[key] += float(terms[key].detach())*len(batch)
                 count += len(batch)
@@ -481,16 +600,43 @@ def run_training(*, model_class, config_class, loss_function, engine_class,
             if val is not None:
                 scheduler.step(val['reconstruction_loss'])
             improved = val is not None and (best_metric is None or val['reconstruction_loss'] < best_metric)
+            meaningful_improvement = val is not None and (
+                best_metric is None
+                or val['reconstruction_loss'] < best_metric - settings['early_stopping_min_delta']
+            )
             if improved:
                 best_metric, best_epoch = val['reconstruction_loss'], epoch
                 best_state = clone_model_state(model)
+            if meaningful_improvement:
+                early_stopping_no_improve = 0
+            elif val is not None:
+                early_stopping_no_improve += 1
+            should_stop = bool(
+                val is not None and settings['early_stopping_patience'] > 0
+                and early_stopping_no_improve >= settings['early_stopping_patience']
+            )
+            if should_stop:
+                stop_reason = 'early_stopping_validation_plateau'
             seconds = time.perf_counter()-started
             cumulative_seconds += seconds
             row = {'epoch': epoch, 'learning_rate': optimizer.param_groups[0]['lr'],
+                   'gradient_norm_mean': gradient_sum / max(1, gradient_count),
+                   'gradient_norm': gradient_max,
+                   'parameter_norm': _parameter_norm(model),
                    **{f'train_{key}': value/count for key, value in sums.items()},
                    **{f'val_{key}': val[key] if val is not None else None for key in LOSS_KEYS},
                    **{f'test_{key}': test[key] if test is not None else None for key in LOSS_KEYS},
-                   'validation_evaluated': val is not None, 'test_evaluated': test is not None, 'seconds': seconds}
+                   'validation_evaluated': val is not None, 'test_evaluated': test is not None,
+                   'early_stopping_no_improve': early_stopping_no_improve,
+                   'stop_reason': stop_reason, 'seconds': seconds}
+            resource_history.append({
+                'epoch': epoch, 'wall_seconds': seconds,
+                'process_seconds': time.process_time() - process_started,
+                'cuda_peak_memory_allocated_mb': (torch.cuda.max_memory_allocated(device) / 1024**2
+                                                  if device.type == 'cuda' else 0.),
+                'cuda_peak_memory_reserved_mb': (torch.cuda.max_memory_reserved(device) / 1024**2
+                                                 if device.type == 'cuda' else 0.),
+            })
             history.append(row)
             completed_epoch = epoch
             saved = payload(completed_epoch)
@@ -507,6 +653,8 @@ def run_training(*, model_class, config_class, loss_function, engine_class,
             if test is not None:
                 message += f'; test MSE={test["reconstruction_loss"]:.6f}'
             print(message, flush=True)
+            if should_stop:
+                break
         if best_metric is None:
             # A completed weights-only checkpoint can be evaluated without an additional epoch.
             val = evaluate(model, tensors['val'], settings['batch_size'], settings['beta'], loss_function)
@@ -522,6 +670,7 @@ def run_training(*, model_class, config_class, loss_function, engine_class,
             loss_function, model_class, engine_class, streaming_class, model_family,
             completed_epoch, start_epoch, cumulative_seconds, previous_seconds, history,
             best_metric, best_epoch, initial_status, baseline_kind, initial_epoch, resume_mode, resume_path,
+            resource_history,
         )
         print(json.dumps({'model': model_family, 'completed_epoch': completed_epoch,
                           'best_epoch': best_epoch, 'test_reconstruction_mse': report['after']['test']['reconstruction_loss'],

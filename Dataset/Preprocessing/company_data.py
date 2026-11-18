@@ -16,7 +16,8 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-from Dataset.Preprocessing.dataset_splits import SPLIT_NAMES, read_split_csv
+from Dataset.Preprocessing.dataset_splits import SPLIT_NAMES, normalize_identifier, read_split_csv
+from Dataset.Preprocessing.dataset_quality import summarize_quality, validate_recording
 
 
 DEFAULT_SOURCE = PROJECT_ROOT / "Dataset" / "Data"
@@ -97,11 +98,19 @@ def build_dataset(
 
     split_path = (Path(split_csv) if split_csv is not None else DEFAULT_SPLIT_CSV).resolve()
     split_rows = read_split_csv(split_path)
-    active_rows = [row for row in split_rows if row["split"] in SPLIT_NAMES]
-    found = {p.name for p in source.iterdir() if p.is_dir() and not p.name.startswith(".")}
+    active_rows = [
+        {**row, "recording_id": normalize_identifier(row["recording_id"]),
+         "source_recording_id": normalize_identifier(row["source_recording_id"])}
+        for row in split_rows if row["split"] in SPLIT_NAMES
+    ]
+    found = {
+        normalize_identifier(p.name): p
+        for p in source.iterdir()
+        if p.is_dir() and not p.name.startswith(".")
+    }
     expected = {row["recording_id"] for row in active_rows}
-    missing = sorted(expected - found)
-    ignored = sorted(found - expected)
+    missing = sorted(expected - set(found))
+    ignored = sorted(set(found) - expected)
     if missing:
         raise ValueError(
             "missing recordings: " + ", ".join(missing)
@@ -110,9 +119,10 @@ def build_dataset(
 
     dataset = {split: {"x": [], "windows": []} for split in SPLIT_NAMES}
     manifest = []
+    quality_records = []
     for row in active_rows:
         recording_id = row["recording_id"]
-        directory = source / recording_id
+        directory = found[recording_id]
         metadata_path = directory / "metadata.json"
         with metadata_path.open(encoding="utf-8-sig") as handle:
             metadata = json.load(handle)
@@ -130,6 +140,17 @@ def build_dataset(
                 f"CSV declares {row['source_recording_id']!r}, metadata identifies {actual_source_id!r}"
             )
         sample_rate, pcm = read_wav(directory / "audio_000000.wav")
+        quality = validate_recording(
+            directory, recording_id, actual_source_id, row["split"],
+            metadata=metadata, pcm=pcm, sample_rate=sample_rate,
+        )
+        quality_records.append(quality)
+        if quality["errors"]:
+            first = quality["errors"][0]
+            raise ValueError(
+                f"Dataset quality validation failed for {recording_id}: "
+                f"{first['code']}: {first['message']}"
+            )
         starts = select_window_starts(len(pcm), sequence_length, max_windows_per_recording)
         split = row["split"]
         for value in starts:
@@ -160,6 +181,7 @@ def build_dataset(
     dataset["ignored_recordings"] = ignored
     dataset["split_csv"] = str(split_path)
     dataset["split_rows"] = split_rows
+    dataset["quality_report"] = summarize_quality(quality_records, ignored)
     return dataset
 
 
