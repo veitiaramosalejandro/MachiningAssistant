@@ -21,6 +21,7 @@ from Dataset.Preprocessing.company_data import (
 )
 from Dataset.Preprocessing.dataset_splits import SPLIT_NAMES, split_recording_ids, write_split_csv
 from device_support import resolve_device
+from anomaly_baseline import build_baseline_report
 from training_support import (
     atomic_json, atomic_torch_save, capture_rng_state, clone_model_state,
     prepare_run_directory, restore_rng_state, _replace_with_retry, _temporary_path,
@@ -323,15 +324,25 @@ def _engineering_outputs(output, dataset, tensors, model, config, initial_state,
             batch = dataset[split]['x'][start:start+settings['batch_size']]
             baseline = initial.predict_windows(batch, include_reconstruction=False)
             trained = reloaded.predict_windows(batch, include_reconstruction=False)
+            best_prediction = best_reloaded.predict_windows(batch, include_reconstruction=False)
             for j, window in enumerate(dataset[split]['windows'][start:start+settings['batch_size']]):
                 row = {**window, 'split': split,
                        'initial_mse_standardized': baseline['reconstruction_mse_standardized'][j],
                        'trained_mse_standardized': trained['reconstruction_mse_standardized'][j],
                        'smoke_trained_mse_standardized': trained['reconstruction_mse_standardized'][j]}
+                row['best_mse_standardized'] = best_prediction['reconstruction_mse_standardized'][j]
                 if initial_status == 'untrained':
                     row['untrained_mse_standardized'] = row['initial_mse_standardized']
                 sample_predictions.append(row)
+    baseline_report = build_baseline_report(sample_predictions, settings['data_dir'])
+    for row, baseline_row in zip(sample_predictions, baseline_report['window_states']):
+        row.update({
+            'baseline_state': baseline_row.get('state'),
+            'baseline_threshold': baseline_row.get('threshold'),
+            'baseline_threshold_source': baseline_row.get('threshold_source'),
+        })
     atomic_csv(output/'window_predictions.csv', sample_predictions)
+    atomic_json(baseline_report, output/'baseline_report.json')
     probe = raw[:1]
     for _ in range(3):
         reloaded.predict_windows(probe, include_reconstruction=False)
@@ -380,6 +391,7 @@ def _engineering_outputs(output, dataset, tensors, model, config, initial_state,
         }),
         'code_version': _code_version(),
         'mean_reconstruction_baseline_mse': {split: float((value**2).mean()) for split, value in tensors.items()},
+        'baseline': baseline_report,
         'verified_prediction_windows': len(sample_predictions),
         'checkpoint_max_abs_replay_delta_pcm': reload_delta,
         'streaming_check': {'emitted_windows': len(streamed), 'pending_frames': stream.pending_frames,

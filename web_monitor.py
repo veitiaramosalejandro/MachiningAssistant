@@ -629,6 +629,14 @@ def _read_json_file(path: Path, default):
         return default
 
 
+def _float_or_none(value):
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
 def _context_at(context_doc: dict, metadata: dict, timestamp_s: float) -> dict:
     entries = context_doc.get("contexts", []) if isinstance(context_doc, dict) else []
     candidates = [item for item in entries if isinstance(item, dict) and float(item.get("timestamp_seconds", 0) or 0) <= timestamp_s]
@@ -760,7 +768,7 @@ def _training_result(output_dir: Path) -> dict:
                 try:
                     start_s = float(row.get("start_s", 0))
                     end_s = float(row.get("end_s", start_s))
-                    score = float(row.get("trained_mse_standardized", "nan"))
+                    score = float(row.get("best_mse_standardized", row.get("trained_mse_standardized", "nan")))
                 except (TypeError, ValueError):
                     continue
                 recording_id = row.get("recording_id", "")
@@ -789,6 +797,9 @@ def _training_result(output_dir: Path) -> dict:
                     "start_s": start_s,
                     "end_s": end_s,
                     "score": score,
+                    "baseline_state": row.get("baseline_state"),
+                    "baseline_threshold": _float_or_none(row.get("baseline_threshold")),
+                    "baseline_threshold_source": row.get("baseline_threshold_source"),
                     "operation_context": _context_at(context_doc, metadata, context_time_s),
                     "events": overlap_events,
                     "playback_offset_ms": playback_offset_ms,
@@ -802,10 +813,11 @@ def _training_result(output_dir: Path) -> dict:
                 }
                 rows.append(enriched)
     finite_rows = [row for row in rows if math.isfinite(row["score"])]
-    train_scores = sorted(row["score"] for row in finite_rows if row["split"] == "train")
-    threshold = train_scores[min(len(train_scores) - 1, int(len(train_scores) * 0.99))] if train_scores else None
+    baseline_report = _read_json_file(output_dir / "baseline_report.json", report.get("baseline", {}))
+    global_stats = baseline_report.get("global", {}) if isinstance(baseline_report, dict) else {}
+    threshold = global_stats.get("p99")
     for row in finite_rows:
-        row["above_train_p99"] = threshold is not None and row["score"] > threshold
+        row["above_train_p99"] = threshold is not None and row["score"] > float(threshold)
     top_windows = sorted(finite_rows, key=lambda row: row["score"], reverse=True)[:100]
     context_counts = {}
     for row in finite_rows:
@@ -821,10 +833,11 @@ def _training_result(output_dir: Path) -> dict:
         "learning_statistics": _learning_statistics(report),
         "history": report.get("history", []),
         "baseline": report.get("mean_reconstruction_baseline_mse", {}),
+        "baseline_report": baseline_report,
         "best_epoch": report.get("best_epoch"),
         "best_checkpoint": report.get("best_checkpoint"),
         "score_reference_train_p99": threshold,
-        "score_reference_note": "Referencia estadística del train; no es un umbral operativo calibrado.",
+        "score_reference_note": "Baseline de train versionado; p95 indica revisión y p99 anomalía estadística. No es una probabilidad de fallo industrial.",
         "context_counts": sorted(context_counts.values(), key=lambda item: item["max_score"], reverse=True),
         "top_windows": top_windows,
         "window_count": len(finite_rows),

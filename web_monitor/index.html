@@ -633,6 +633,7 @@
         <article id="resultCard" class="card span-12 hidden">
             <h2>Resultado visual del entrenamiento</h2>
             <div id="resultSummary"></div>
+            <div id="baselineSummary"></div>
             <div id="learningProgress"></div>
             <div id="trainingChart" class="chart"></div>
             <div class="grid">
@@ -1040,13 +1041,18 @@
         const improvement = baseline > 0 ? ((baseline - test) / baseline * 100) : NaN;
         $('resultCard').classList.remove('hidden');
         $('resultSummary').innerHTML = `<div class="grid"><div class="card span-4"><div class="muted">Mejor época</div><div class="metric">${esc(result.best_epoch ?? '—')}</div></div><div class="card span-4"><div class="muted">Validation MSE mínimo</div><div class="metric">${Number.isFinite(best) ? best.toFixed(4) : '—'}</div></div><div class="card span-4"><div class="muted">Test vs baseline</div><div class="metric">${Number.isFinite(improvement) ? improvement.toFixed(1) + '%' : '—'}</div></div></div><p class="notice">${esc(result.score_reference_note || '')} Checkpoint seleccionado: <span class="pill">best.pt</span>. El test mostrado corresponde a los pesos finales.</p>`;
+        const baselineReport = result.baseline_report || {};
+        const stats = baselineReport.global || {};
+        const calibration = baselineReport.validation_calibration || {};
+        const stateCounts = (baselineReport.window_states || []).reduce((acc, item) => { const key = item.state || 'unknown'; acc[key] = (acc[key] || 0) + 1; return acc; }, {});
+        $('baselineSummary').innerHTML = `<div class="card baseline-panel"><h3>Baseline estadístico de anomalías</h3><p class="muted">${esc(baselineReport.threshold_policy || 'Sin baseline disponible.')}</p><div class="grid"><div class="card span-2"><div class="muted">Media</div><div class="metric">${Number.isFinite(Number(stats.mean)) ? Number(stats.mean).toFixed(4) : '—'}</div></div><div class="card span-2"><div class="muted">Desv. estándar</div><div class="metric">${Number.isFinite(Number(stats.std)) ? Number(stats.std).toFixed(4) : '—'}</div></div><div class="card span-2"><div class="muted">P90</div><div class="metric">${Number.isFinite(Number(stats.p90)) ? Number(stats.p90).toFixed(4) : '—'}</div></div><div class="card span-2"><div class="muted">P95</div><div class="metric">${Number.isFinite(Number(stats.p95)) ? Number(stats.p95).toFixed(4) : '—'}</div></div><div class="card span-2"><div class="muted">P99</div><div class="metric">${Number.isFinite(Number(stats.p99)) ? Number(stats.p99).toFixed(4) : '—'}</div></div><div class="card span-2"><div class="muted">Calibración</div><div class="metric">${esc(calibration.status || '—')}</div></div></div><p class="muted">Estados: ${Object.entries(stateCounts).map(([key, value]) => `${esc(key)}=${value}`).join(' · ') || '—'}${calibration.metrics ? ` · F1 validación=${Number(calibration.metrics.f1).toFixed(3)}` : ''}</p></div>`;
         renderLearningProgress(result.learning_statistics);
         loadLearningHistory(result.report?.training_id || result.training_id);
         $('trainingChart').innerHTML = trainingSvg(result.history || []);
         const contexts = (result.context_counts || []).slice(0, 12);
         $('contextSummary').innerHTML = contexts.length ? `<table><tr><th>Operación</th><th>Ventanas</th><th>Media</th><th>Máximo</th></tr>${contexts.map(x => `<tr><td>${esc(x.operation)}</td><td>${x.windows}</td><td>${Number(x.mean_score).toFixed(3)}</td><td>${Number(x.max_score).toFixed(3)}</td></tr>`).join('')}</table>` : '<p class="muted">No hay contexto operativo disponible.</p>';
         const top = (result.top_windows || []).slice(0, 20);
-        $('topWindows').innerHTML = top.length ? `<div class="scroll-table"><table><tr><th>Tiempo</th><th>Score</th><th>Operación</th><th>Herramienta</th><th>Eventos</th></tr>${top.map(x => `<tr><td>${Number(x.start_s).toFixed(2)} s</td><td>${Number(x.score).toFixed(4)}${x.above_train_p99 ? ' ⚠' : ''}</td><td>${esc(x.operation_context?.operation || '—')}</td><td>${esc(x.operation_context?.tool || '—')}</td><td>${x.events?.length || 0}</td></tr>`).join('')}</table></div>` : '<p class="muted">No hay predicciones disponibles.</p>';
+        $('topWindows').innerHTML = top.length ? `<div class="scroll-table"><table><tr><th>Tiempo</th><th>Score</th><th>Estado</th><th>Operación</th><th>Herramienta</th><th>Eventos</th></tr>${top.map(x => `<tr><td>${Number(x.start_s).toFixed(2)} s</td><td>${Number(x.score).toFixed(4)}${x.above_train_p99 ? ' ⚠' : ''}</td><td>${esc(x.baseline_state || '—')}</td><td>${esc(x.operation_context?.operation || '—')}</td><td>${esc(x.operation_context?.tool || '—')}</td><td>${x.events?.length || 0}</td></tr>`).join('')}</table></div>` : '<p class="muted">No hay predicciones disponibles.</p>';
         applyLanguage();
     }
 
