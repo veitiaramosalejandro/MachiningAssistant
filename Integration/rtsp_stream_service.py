@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -22,6 +23,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from Integration.grpc_service import _load_env_file
+from Integration.rtsp_context import playback_message_to_context
 from Integration.simulate_monitor import load_engine
 from classification_streaming import StreamingClassifier
 
@@ -31,8 +33,54 @@ CHANNELS = 2
 FRAME_BYTES = CHANNELS * 2
 
 
+class MetadataTimeline:
+    """Read snapshots produced by the parallel metadata RTSP receiver."""
+
+    def __init__(self, path: Path, occurred_at_utc: str):
+        self.path = path
+        self.occurred_at_utc = occurred_at_utc
+        self.offset = 0
+        self.messages = []
+
+    def _refresh(self):
+        if not self.path.is_file():
+            return
+        with self.path.open("r", encoding="utf-8", errors="replace") as handle:
+            handle.seek(self.offset)
+            for line in handle:
+                try:
+                    message = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(message, dict):
+                    self.messages.append(message)
+            self.offset = handle.tell()
+
+    def context_at(self, start_s: float, end_s: float):
+        self._refresh()
+        candidates = []
+        for message in self.messages:
+            if message.get("type") != "snapshot":
+                continue
+            try:
+                timestamp = float(message.get("timestampSeconds"))
+            except (TypeError, ValueError):
+                continue
+            if timestamp <= start_s:
+                candidates.append((timestamp, message))
+        if not candidates:
+            raise RuntimeError(f"No x-machining-metadata snapshot is available for audio window [{start_s:.3f}, {end_s:.3f})")
+        _, message = max(candidates, key=lambda item: item[0])
+        try:
+            return playback_message_to_context(message, self.occurred_at_utc)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"Metadata snapshot cannot become a CNN1D-VAE context: {exc}") from exc
+
+
 def _env(env: dict[str, str], name: str, fallback: str) -> str:
-    return env.get(name, fallback)
+    # The web monitor passes the selected RTSP source through the process
+    # environment. It must override the project .env defaults.
+    return os.environ.get(name, env.get(name, fallback))
 
 
 def _ffmpeg_command(ffmpeg: str, url: str, transport: str) -> list[str]:
@@ -67,7 +115,12 @@ def _probe_stream(ffprobe: str, url: str, transport: str) -> dict:
         ffprobe, "-v", "error", "-rtsp_transport", transport,
         "-select_streams", "a:0", "-show_streams", "-of", "json", url,
     ]
-    completed = subprocess.run(command, capture_output=True, text=True, timeout=15)
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=15)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"FFprobe timed out after 15 seconds while opening RTSP source {_safe_rtsp_url(url)}"
+        ) from exc
     if completed.returncode != 0:
         detail = completed.stderr.strip().replace(url, _safe_rtsp_url(url)) or f"exit code {completed.returncode}"
         raise RuntimeError(f"FFprobe could not inspect the RTSP stream: {detail}")
@@ -95,7 +148,8 @@ def _write_metadata(path: Path, metadata: dict) -> None:
 
 def run_stream(*, model: str, checkpoint: Path, url: str, ffmpeg: str,
                ffprobe: str, transport: str, source_sample_rate: int, chunk_ms: float,
-               output: Path, metadata_output: Path, device: str, threads: int) -> dict:
+               output: Path, metadata_output: Path, device: str, threads: int,
+               context_stream: Path | None = None) -> dict:
     if chunk_ms <= 0:
         raise ValueError("MACHINING_RTSP_CHUNK_MS must be positive")
     chunk_frames = round(SAMPLE_RATE * chunk_ms / 1000)
@@ -144,6 +198,13 @@ def run_stream(*, model: str, checkpoint: Path, url: str, ffmpeg: str,
     if predictor.sample_rate != SAMPLE_RATE or predictor.valid_frames != 220500:
         raise ValueError("Checkpoint must support 44100 Hz and five-second windows")
     stream = StreamingClassifier(predictor)
+    metadata_timeline = None
+    if context_stream is not None and predictor.context_dim:
+        metadata_timeline = MetadataTimeline(context_stream, metadata["started_at_utc"])
+    metadata["model_context_dim"] = predictor.context_dim
+    metadata["context_stream"] = str(context_stream) if context_stream is not None else None
+    metadata["context_used_by_model"] = bool(metadata_timeline)
+    _write_metadata(metadata_output, metadata)
     output.parent.mkdir(parents=True, exist_ok=True)
     command = _ffmpeg_command(ffmpeg, url, transport)
     started = time.perf_counter()
@@ -168,7 +229,8 @@ def run_stream(*, model: str, checkpoint: Path, url: str, ffmpeg: str,
                 metadata["chunks_received"] += 1
                 metadata["source_frames_received"] += len(pcm)
                 metadata["model_frames_received"] = stream.input_frames + len(pcm)
-                for result in stream.push(pcm, sample_rate=SAMPLE_RATE):
+                provider = None if metadata_timeline is None else metadata_timeline.context_at
+                for result in stream.push(pcm, sample_rate=SAMPLE_RATE, context_provider=provider):
                     metadata["processed_frames"] = stream.processed_frames
                     metadata["emitted_windows"] = stream.emitted_windows
                     metadata["trailing_frames"] = stream.pending_frames
@@ -251,6 +313,8 @@ def main(argv=None) -> int:
     parser.add_argument("--output", type=Path, default=Path(_env(env, "MACHINING_RTSP_OUTPUT", "runs/rtsp/live_predictions.jsonl")))
     parser.add_argument("--metadata-output", type=Path,
                         default=Path(_env(env, "MACHINING_RTSP_METADATA_OUTPUT", "runs/rtsp/live_predictions.metadata.json")))
+    context_stream_value = _env(env, "MACHINING_RTSP_CONTEXT_STREAM", "")
+    parser.add_argument("--context-stream", type=Path, default=Path(context_stream_value) if context_stream_value else None)
     parser.add_argument("--model", choices=("cnn", "lstm"), default=_env(env, "MACHINING_MODEL", "cnn"))
     parser.add_argument("--checkpoint", type=Path, default=Path(_env(env, "MACHINING_CHECKPOINT", "")))
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default=_env(env, "MACHINING_DEVICE", "auto"))
@@ -268,7 +332,8 @@ def main(argv=None) -> int:
                             source_sample_rate=args.source_sample_rate, chunk_ms=args.chunk_ms,
                             output=args.output.expanduser().resolve(),
                             metadata_output=args.metadata_output.expanduser().resolve(),
-                            device=args.device, threads=args.threads)
+                            device=args.device, threads=args.threads,
+                            context_stream=args.context_stream.expanduser().resolve() if args.context_stream else None)
     except (OSError, RuntimeError, ValueError, FileNotFoundError) as exc:
         parser.error(str(exc))
     print(json.dumps(report, ensure_ascii=False, indent=2), flush=True)

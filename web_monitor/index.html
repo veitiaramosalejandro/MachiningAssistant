@@ -450,6 +450,31 @@
             overflow: auto;
         }
 
+        .source-status {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+            margin-top: 14px;
+        }
+
+        .source-status div {
+            padding: 10px;
+            border: 1px solid var(--line-soft);
+            border-radius: 10px;
+            background: #091820;
+        }
+
+        .source-status strong {
+            display: block;
+            color: var(--text);
+            font-size: 13px;
+        }
+
+        .source-status span {
+            color: var(--muted);
+            font-size: 12px;
+        }
+
         @media (max-width: 900px) {
             .span-4, .span-5, .span-7, .span-8 {
                 grid-column: span 12
@@ -502,6 +527,30 @@
             <div id="serviceMetric" class="metric">—</div>
             <p id="serviceDetail" class="service-detail">Verificando API...</p>
             <button class="secondary" onclick="refreshAll()">Actualizar estado</button>
+        </article>
+        <article class="card span-8"><h2>Fase nueva · entrenamiento de prueba RTSP</h2>
+            <p>Configura una captura local de audio + metadata para preparar datos multimodales de CNN1D-VAE. Esta fase valida la fuente; todavía no inicia el entrenamiento ni inventa etiquetas.</p>
+            <div class="config-grid">
+                <div><label for="rtspTrainingUrl">Fuente RTSP local</label><input id="rtspTrainingUrl" value="rtsp://127.0.0.1:8555/audio" autocomplete="off"></div>
+                <div><label for="rtspUsername">Usuario RTSP</label><input id="rtspUsername" placeholder="Solo para esta comprobación" autocomplete="off"></div>
+                <div><label for="rtspPassword">Contraseña RTSP</label><input id="rtspPassword" type="password" placeholder="No se guarda en el navegador" autocomplete="new-password"></div>
+                <div><label for="rtspProbeTimeout">Tiempo máximo de comprobación</label><select id="rtspProbeTimeout"><option value="5">5 segundos</option><option value="10">10 segundos</option><option value="15" selected>15 segundos</option><option value="30">30 segundos</option></select></div>
+                <div><label for="rtspTrainingWindow">Ventana de audio</label><select id="rtspTrainingWindow"><option value="5" selected>5 segundos · 220500 muestras</option></select></div>
+                <div><label for="rtspTrainingLabels">Fuente de labels</label><select id="rtspTrainingLabels"><option value="metadata_event" selected>Eventos de metadata · pendiente de alineación</option><option value="manual_review">Revisión manual posterior</option></select></div>
+                <div><label for="rtspTrainingPolicy">Política continua</label><select id="rtspTrainingPolicy"><option value="continuous_capture_then_batch" selected>Capturar continuamente y entrenar por lotes</option><option value="capture_only">Solo capturar</option></select></div>
+                <div><label for="rtspMinLabeledWindows">Mínimo de ventanas etiquetadas</label><input id="rtspMinLabeledWindows" type="number" min="1" max="100000" value="32"></div>
+            </div>
+            <p class="muted">Modelo fijado: <strong>CNN1D-VAE</strong> · Audio esperado: <strong>44,1 kHz / 2 canales / PCM16LE</strong> · Contrato metadata: <strong>x-machining-metadata / MAM1</strong>.</p>
+            <button class="secondary" onclick="saveRtspTrainingConfig()">Guardar configuración de prueba</button>
+            <button class="secondary" onclick="resetRtspTrainingConfig()">Restablecer RTSP 8555</button>
+            <button id="rtspValidateButton" onclick="validateRtspTrainingSource()">Validar audio + metadata</button>
+            <div class="config-grid">
+                <button id="rtspListenButton" onclick="startRtspListener()">Conectar y escuchar RTSP</button>
+                <button id="rtspStopButton" class="secondary" onclick="stopRtspListener()" disabled>Desconectar</button>
+            </div>
+            <button id="rtspTrainButton" class="secondary" onclick="requestRtspTraining()" disabled>Enviar lote al entrenamiento</button>
+            <div id="rtspTrainingResult" class="source-status"><div><strong>Audio</strong><span>Sin comprobar</span></div><div><strong>Metadata</strong><span>Sin comprobar</span></div></div>
+            <pre id="rtspTrainingDetails" class="muted">La validación no modifica el stream. La escucha se inicia solo al pulsar el botón.</pre>
         </article>
         <article class="card span-4"><h2>Persistencia</h2>
             <div id="storageMetric" class="metric">—</div>
@@ -667,6 +716,8 @@
     let inferenceModels = [];
     let selectedImport = null;
     let pollTimer = null;
+    let rtspListenerId = null;
+    let rtspPollTimer = null;
     const $ = id => document.getElementById(id);
 
     const TRANSLATIONS = {
@@ -779,6 +830,153 @@
         return data;
     }
 
+    async function validateRtspTrainingSource() {
+        const button = $('rtspValidateButton');
+        const result = $('rtspTrainingResult');
+        const details = $('rtspTrainingDetails');
+        button.disabled = true;
+        result.innerHTML = '<div><strong>Audio</strong><span>Comprobando...</span></div><div><strong>Metadata</strong><span>Comprobando...</span></div>';
+        try {
+            const report = await api('/api/rtsp-training/validate', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    rtsp_url: $('rtspTrainingUrl').value,
+                    rtsp_username: $('rtspUsername').value,
+                    rtsp_password: $('rtspPassword').value,
+                    probe_timeout_seconds: Number($('rtspProbeTimeout').value),
+                    model_family: 'CNN1D-VAE',
+                    audio_window_seconds: Number($('rtspTrainingWindow').value),
+                    label_source: $('rtspTrainingLabels').value,
+                    training_policy: $('rtspTrainingPolicy').value,
+                    min_labeled_windows: Number($('rtspMinLabeledWindows').value)
+                })
+            });
+            const audio = report.audio_track_detected;
+            const metadata = report.metadata_track_detected;
+            result.innerHTML = `<div><strong>Audio</strong><span class="${audio ? 'ok' : 'bad'}">${audio ? 'Detectado' : 'No detectado'}</span></div><div><strong>Metadata</strong><span class="${metadata ? 'ok' : 'bad'}">${metadata ? 'Detectada' : 'No detectada'}</span></div>`;
+            details.textContent = `${report.ok ? 'Fuente apta para la siguiente fase.' : 'Fuente no apta todavía.'}\n${report.next_step}\n\n${JSON.stringify(report, null, 2)}`;
+        } catch (e) {
+            result.innerHTML = `<div><strong>Audio + metadata</strong><span class="bad">Error de comprobación</span></div>`;
+            details.textContent = e.message;
+        } finally {
+            button.disabled = false;
+        }
+    }
+
+    async function startRtspListener() {
+        const startButton = $('rtspListenButton');
+        startButton.disabled = true;
+        try {
+            const job = await api('/api/rtsp-training/listener/start', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    rtsp_url: $('rtspTrainingUrl').value,
+                    rtsp_username: $('rtspUsername').value,
+                    rtsp_password: $('rtspPassword').value,
+                    transport: 'tcp',
+                    training_policy: $('rtspTrainingPolicy').value,
+                    min_labeled_windows: Number($('rtspMinLabeledWindows').value)
+                })
+            });
+            rtspListenerId = job.listener_id;
+            $('rtspStopButton').disabled = false;
+            $('rtspTrainingDetails').textContent = `Escuchando RTSP. Sesión: ${job.listener_id}\nURL: ${job.rtsp_url}\nEstado: ${job.status}\nPolítica: ${job.training_policy}\nVentanas etiquetadas requeridas: ${job.min_labeled_windows}\n\nLa contraseña no se persiste.`;
+            rtspPollTimer = setInterval(() => pollRtspListener(), 1500);
+            await pollRtspListener();
+        } catch (e) {
+            $('rtspTrainingDetails').textContent = `No se pudo iniciar la escucha: ${e.message}`;
+            startButton.disabled = false;
+        }
+    }
+
+    async function pollRtspListener() {
+        if (!rtspListenerId) return;
+        try {
+            const job = await api('/api/rtsp-training/listener/status?listener_id=' + encodeURIComponent(rtspListenerId));
+            const session = job.session_metadata || {};
+            const metadataStatus = job.metadata_stream_status || {};
+            $('rtspTrainingResult').innerHTML = `<div><strong>Audio</strong><span class="ok">${session.model_frames_received || 0} muestras</span></div><div><strong>Metadata</strong><span class="${metadataStatus.status === 'running' ? 'ok' : 'bad'}">${metadataStatus.status || 'iniciando'}</span></div><div><strong>Eventos</strong><span>${job.metadata_events || 0}</span></div><div><strong>Ventanas alineadas</strong><span>${job.labeled_windows || 0}/${job.min_labeled_windows || 0}</span></div>`;
+            $('rtspTrainingDetails').textContent = `Escucha RTSP: ${job.status}\nAudio: ${session.model_frames_received || 0} muestras normalizadas\nVentanas completas: ${session.emitted_windows || 0}\nMetadata: ${metadataStatus.messages_received || 0} mensajes · ${metadataStatus.packets_received || 0} paquetes RTP\nEventos metadata: ${job.metadata_events || 0}\nSnapshots metadata: ${job.metadata_snapshots || 0}\nVentanas alineadas: ${job.labeled_windows || 0}/${job.min_labeled_windows || 0}\nEntrenamiento listo: ${job.training_ready ? 'sí' : 'no'}\nContexto admitido por checkpoint: ${job.checkpoint_contract?.context_dim || 0} features\nMetadata usada por el modelo: ${session.context_used_by_model ? 'sí' : 'no'}\nDataset alineado: ${job.aligned_training_output}\n\n${job.training_note || ''}\n\n${job.log_tail || ''}`;
+            if (['completed', 'failed', 'stopped'].includes(job.status)) {
+                clearInterval(rtspPollTimer);
+                rtspPollTimer = null;
+                $('rtspListenButton').disabled = false;
+                $('rtspStopButton').disabled = true;
+            }
+            $('rtspTrainButton').disabled = !rtspListenerId;
+        } catch (e) {
+            $('rtspTrainingDetails').textContent = `Error consultando la escucha: ${e.message}`;
+        }
+    }
+
+    async function stopRtspListener() {
+        if (!rtspListenerId) return;
+        $('rtspStopButton').disabled = true;
+        try {
+            await api('/api/rtsp-training/listener/stop', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({listener_id: rtspListenerId})
+            });
+            await pollRtspListener();
+        } catch (e) {
+            $('rtspTrainingDetails').textContent = `No se pudo detener la escucha: ${e.message}`;
+            $('rtspStopButton').disabled = false;
+        }
+    }
+
+    async function requestRtspTraining() {
+        if (!rtspListenerId) return;
+        try {
+            const result = await api('/api/rtsp-training/train', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({listener_id: rtspListenerId})
+            });
+            const blockers = (result.blockers || []).map(item => `• ${item}`).join('\n');
+            $('rtspTrainingDetails').textContent = `${result.status === 'blocked' ? 'Entrenamiento bloqueado' : 'Entrenamiento aceptado'}\n\n${blockers}\n\nDataset: ${result.aligned_training_output || '—'}\nContrato del checkpoint:\n${JSON.stringify(result.checkpoint_contract || {}, null, 2)}`;
+        } catch (e) {
+            $('rtspTrainingDetails').textContent = `No se pudo solicitar el entrenamiento: ${e.message}`;
+        }
+    }
+
+    function saveRtspTrainingConfig() {
+        const config = {
+            rtsp_url: $('rtspTrainingUrl').value,
+            probe_timeout_seconds: Number($('rtspProbeTimeout').value),
+            audio_window_seconds: Number($('rtspTrainingWindow').value),
+            label_source: $('rtspTrainingLabels').value,
+            model_family: 'CNN1D-VAE',
+            training_policy: $('rtspTrainingPolicy').value,
+            min_labeled_windows: Number($('rtspMinLabeledWindows').value)
+        };
+        localStorage.setItem('cnn1dVaeRtspTrainingConfig', JSON.stringify(config));
+        $('rtspTrainingDetails').textContent = 'Configuración guardada localmente en este navegador. No contiene credenciales.\n\n' + JSON.stringify(config, null, 2);
+    }
+
+    function loadRtspTrainingConfig() {
+        try {
+            const config = JSON.parse(localStorage.getItem('cnn1dVaeRtspTrainingConfig') || '{}');
+            if (config.rtsp_url) $('rtspTrainingUrl').value = config.rtsp_url;
+            if (config.probe_timeout_seconds) $('rtspProbeTimeout').value = String(config.probe_timeout_seconds);
+            if (config.audio_window_seconds) $('rtspTrainingWindow').value = String(config.audio_window_seconds);
+            if (config.label_source) $('rtspTrainingLabels').value = config.label_source;
+            if (config.training_policy) $('rtspTrainingPolicy').value = config.training_policy;
+            if (config.min_labeled_windows) $('rtspMinLabeledWindows').value = String(config.min_labeled_windows);
+        } catch (_) {
+            localStorage.removeItem('cnn1dVaeRtspTrainingConfig');
+        }
+    }
+
+    function resetRtspTrainingConfig() {
+        localStorage.removeItem('cnn1dVaeRtspTrainingConfig');
+        $('rtspTrainingUrl').value = 'rtsp://127.0.0.1:8555/audio';
+        $('rtspUsername').value = '';
+        $('rtspPassword').value = '';
+        $('rtspTrainingDetails').textContent = 'Fuente restablecida a rtsp://127.0.0.1:8555/audio. Introduce las credenciales solo para conectar.';
+    }
+
     function esc(v) {
         return String(v ?? '').replace(/[&<>"']/g, c => ({
             '&': '&amp;',
@@ -792,10 +990,11 @@
     async function refreshAll() {
         try {
             const s = await api('/api/status');
-            $('dot').className = 'dot ok';
-            $('statusText').textContent = `${t('API')} ${s.live.status}; ${t('ready')} ${s.ready ? 'OK' : t('protegido/no disponible')}`;
-            $('serviceMetric').textContent = s.live.status === 'alive' ? 'ONLINE' : '—';
-            $('serviceDetail').textContent = `${s.service_url} · almacenamiento ${s.data_root}`;
+            const monitorOnline = s.live?.status === 'alive';
+            $('dot').className = `dot ${monitorOnline ? 'ok' : ''}`;
+            $('statusText').textContent = monitorOnline ? `${t('API')} ${s.live.status}; ${t('ready')} ${s.ready ? 'OK' : t('protegido/no disponible')}` : 'RTSP independiente · Monitor no disponible';
+            $('serviceMetric').textContent = monitorOnline ? 'ONLINE' : 'OFFLINE';
+            $('serviceDetail').textContent = monitorOnline ? `${s.service_url} · almacenamiento ${s.data_root}` : `RTSP independiente disponible · ${s.service_error || 'MachiningMonitor no responde'}`;
             const local = await api('/api/local-dataset');
             localRecordings = local.recordings || [];
             localRoot = local.root || '';
@@ -1218,6 +1417,7 @@
     };
     applyLanguage();
     applyPreset();
+    loadRtspTrainingConfig();
     $('importInfo').textContent = 'Prepara una grabación específica o el dataset completo para habilitar el entrenamiento.';
     applyLanguage();
     refreshAll();
