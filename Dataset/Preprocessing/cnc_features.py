@@ -183,6 +183,96 @@ def build_feature_vector(context: Mapping[str, object]) -> np.ndarray:
     )
 
 
+class CncFeatureNormalizer:
+    """Normalize the fixed CNC vector using statistics from training rows only.
+
+    The serialized result is part of the model input contract. It must be
+    stored beside the checkpoint and reused unchanged for validation and
+    inference; fitting on those splits would leak information.
+    """
+
+    def __init__(
+        self,
+        mean: np.ndarray | list[float],
+        scale: np.ndarray | list[float],
+        *,
+        feature_names: tuple[str, ...] = FEATURE_NAMES,
+    ) -> None:
+        if tuple(feature_names) != FEATURE_NAMES:
+            raise ValueError("Normalizer feature order does not match the CNC schema")
+        self.feature_names = FEATURE_NAMES
+        self.mean = self._validate_stats(mean, "mean")
+        self.scale = self._validate_stats(scale, "scale")
+        if np.any(self.scale <= 0):
+            raise ValueError("Normalizer scale values must be positive")
+
+    @staticmethod
+    def _validate_stats(values: np.ndarray | list[float], name: str) -> np.ndarray:
+        array = np.asarray(values, dtype=np.float32)
+        if array.shape != (len(FEATURE_NAMES),) or not np.isfinite(array).all():
+            raise ValueError(f"Normalizer {name} must be finite with shape ({len(FEATURE_NAMES)},)")
+        return np.ascontiguousarray(array)
+
+    @classmethod
+    def fit(cls, vectors: np.ndarray | list[list[float]]) -> "CncFeatureNormalizer":
+        """Fit statistics from a matrix containing training vectors only."""
+        matrix = np.asarray(vectors, dtype=np.float32)
+        if matrix.ndim == 1:
+            matrix = matrix[None, :]
+        if matrix.ndim != 2 or matrix.shape[1] != len(FEATURE_NAMES) or matrix.shape[0] == 0:
+            raise ValueError(
+                f"Training vectors must have shape (rows, {len(FEATURE_NAMES)})"
+            )
+        if not np.isfinite(matrix).all():
+            raise ValueError("Training vectors must contain only finite values")
+        mean = matrix.mean(axis=0, dtype=np.float64).astype(np.float32)
+        scale = matrix.std(axis=0, dtype=np.float64).astype(np.float32)
+        # A constant feature remains valid: its centered value is zero.
+        scale[scale == 0] = 1.0
+        return cls(mean, scale)
+
+    @classmethod
+    def fit_contexts(cls, contexts: list[Mapping[str, object]]) -> "CncFeatureNormalizer":
+        """Fit from aligned training contexts, never from validation/test contexts."""
+        if not contexts:
+            raise ValueError("At least one training context is required")
+        return cls.fit(np.stack([build_feature_vector(context) for context in contexts]))
+
+    def transform(self, vectors: np.ndarray | list[float] | list[list[float]]) -> np.ndarray:
+        """Return float32 vectors ready for the model, preserving row shape."""
+        array = np.asarray(vectors, dtype=np.float32)
+        if array.ndim not in (1, 2) or array.shape[-1] != len(FEATURE_NAMES):
+            raise ValueError(
+                f"Vectors must have shape ({len(FEATURE_NAMES)},) or "
+                f"(rows, {len(FEATURE_NAMES)})"
+            )
+        if not np.isfinite(array).all():
+            raise ValueError("Vectors must contain only finite values")
+        return np.ascontiguousarray((array - self.mean) / self.scale, dtype=np.float32)
+
+    def transform_context(self, context: Mapping[str, object]) -> np.ndarray:
+        return self.transform(build_feature_vector(context))
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema": feature_schema(),
+            "feature_names": list(self.feature_names),
+            "feature_units": dict(FEATURE_UNITS),
+            "feature_mean": self.mean.tolist(),
+            "feature_scale": self.scale.tolist(),
+            "missing_value_policy": "reject_missing_model_features",
+            "context_schema_version": FEATURE_SCHEMA_VERSION,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, object]) -> "CncFeatureNormalizer":
+        if list(payload.get("feature_names", ())) != list(FEATURE_NAMES):
+            raise ValueError("Serialized normalizer feature order does not match the CNC schema")
+        if payload.get("context_schema_version") != FEATURE_SCHEMA_VERSION:
+            raise ValueError("Serialized CNC context schema version is not supported")
+        return cls(payload["feature_mean"], payload["feature_scale"])
+
+
 __all__ = [
     "FEATURE_SCHEMA_VERSION",
     "SCALAR_CONTEXT_FIELDS",
@@ -191,4 +281,5 @@ __all__ = [
     "feature_schema",
     "validate_context",
     "build_feature_vector",
+    "CncFeatureNormalizer",
 ]
