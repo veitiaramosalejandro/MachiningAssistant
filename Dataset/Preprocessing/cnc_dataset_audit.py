@@ -15,6 +15,7 @@ import math
 import numpy as np
 
 from .cnc_features import build_feature_vector, feature_schema
+from .cnc_temporal_alignment import align_context_window
 
 
 DEFAULT_SAMPLE_RATE = 44100
@@ -140,8 +141,25 @@ def _validate_record(
 
     try:
         prepared["cnc_features"] = build_feature_vector(record["context"])
+        prepared["temporal_alignment"] = align_context_window(
+            record["start_frame"],
+            record["end_frame_exclusive"],
+            record["context"],
+            record.get("context_events", ()),
+            sample_rate=sample_rate,
+            context_complete_through_source_frame=record.get(
+                "context_complete_through_source_frame"
+            ),
+            allow_variable=False,
+        )
     except (TypeError, ValueError) as exc:
-        errors.append(_reason("invalid_context", str(exc)))
+        message = str(exc)
+        code = "invalid_temporal_alignment" if (
+            "context" in message
+            or "window" in message
+            or "watermark" in message
+        ) else "invalid_context"
+        errors.append(_reason(code, message))
 
     if label_index is not None:
         prepared["label_index"] = label_index
