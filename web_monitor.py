@@ -31,6 +31,7 @@ from persistence import training_history as storage_training_history
 PROJECT_ROOT = Path(__file__).resolve().parent
 WEB_ROOT = PROJECT_ROOT / "web_monitor"
 RUNS_ROOT = PROJECT_ROOT / "runs" / "monitor_training"
+INFERENCE_ROOT = PROJECT_ROOT / "runs" / "inference"
 PYTHON = Path(os.environ.get("MACHINING_PYTHON", str(PROJECT_ROOT / ".venv" / "Scripts" / "python.exe")))
 
 
@@ -926,6 +927,92 @@ def start_training(payload: dict) -> dict:
     return job
 
 
+def _safe_workspace_path(value: str, label: str) -> Path:
+    path = Path(value).expanduser().resolve()
+    allowed_roots = [DATA_ROOT, LOCAL_DATA_ROOT, RUNS_ROOT, INFERENCE_ROOT]
+    if not any(path == root or root in path.parents for root in allowed_roots):
+        raise ValueError(f"{label} está fuera de las carpetas permitidas")
+    return path
+
+
+def _training_output(training_id: str) -> Path:
+    if not training_id or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for ch in training_id):
+        raise ValueError("training_id inválido")
+    with _jobs_lock:
+        job = dict(_jobs.get(training_id, {}))
+    if job.get("output_dir"):
+        output = Path(job["output_dir"]).resolve()
+    else:
+        model = training_id.rsplit("_", 1)[-1]
+        if model not in {"cnn", "lstm"}:
+            raise ValueError("training_id no contiene un modelo válido")
+        job_id = training_id[:-(len(model) + 1)]
+        output = (RUNS_ROOT / job_id / "training" / model).resolve()
+    if not output.is_dir() or not (output / "best.pt").is_file():
+        raise FileNotFoundError("El entrenamiento no tiene un best.pt disponible")
+    return output
+
+
+def inference_models() -> dict:
+    models = []
+    if RUNS_ROOT.is_dir():
+        for checkpoint in sorted(RUNS_ROOT.glob("*/training/*/best.pt"), key=lambda item: item.stat().st_mtime, reverse=True):
+            model = checkpoint.parent.name
+            job_id = checkpoint.parent.parent.parent.name
+            models.append({
+                "training_id": f"{job_id}_{model}", "model": model,
+                "checkpoint": str(checkpoint),
+                "report": _read_json_file(checkpoint.parent / "test_report.json", {}),
+            })
+    return {"models": models[:50]}
+
+
+def _inference_worker(inference_id: str, payload: dict, output_dir: Path) -> None:
+    try:
+        from reconstruction_inference import analyze_recording
+
+        output = _training_output(str(payload["training_id"]))
+        checkpoint = output / "best.pt"
+        wav_path = _safe_workspace_path(str(payload["wav_path"]), "WAV")
+        recording_dir = _safe_workspace_path(str(payload.get("recording_dir") or wav_path.parent), "grabación")
+        previous = sorted(INFERENCE_ROOT.glob("*/analysis_report.json"), key=lambda item: item.stat().st_mtime, reverse=True)[:20]
+        report = analyze_recording(
+            checkpoint, wav_path, recording_dir=recording_dir,
+            output_path=output_dir / "analysis_report.json",
+            device=str(payload.get("device", "auto")), batch_size=8,
+            previous_reports=previous,
+        )
+        with _jobs_lock:
+            _jobs[inference_id].update({"status": "completed", "return_code": 0, "report": report, "finished_at": time.time()})
+    except Exception as exc:
+        with _jobs_lock:
+            _jobs[inference_id].update({"status": "failed", "return_code": 1, "error": str(exc), "finished_at": time.time()})
+
+
+def start_inference(payload: dict) -> dict:
+    training_id = str(payload.get("training_id", ""))
+    _training_output(training_id)
+    wav_path = payload.get("wav_path")
+    recording_dir = payload.get("recording_dir")
+    if not isinstance(wav_path, str) or not wav_path.strip():
+        raise ValueError("wav_path es obligatorio")
+    wav_path = _safe_workspace_path(wav_path, "WAV")
+    if not wav_path.is_file() or wav_path.suffix.lower() != ".wav":
+        raise ValueError("wav_path debe ser un WAV existente")
+    if recording_dir is not None:
+        recording_dir = _safe_workspace_path(str(recording_dir), "grabación")
+    inference_id = f"inference_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    output_dir = INFERENCE_ROOT / inference_id
+    output_dir.mkdir(parents=True, exist_ok=False)
+    job = {"inference_id": inference_id, "training_id": training_id, "wav_path": str(wav_path),
+           "recording_dir": str(recording_dir or wav_path.parent), "status": "starting",
+           "output_dir": str(output_dir), "started_at": time.time()}
+    with _jobs_lock:
+        _jobs[inference_id] = job
+    threading.Thread(target=_inference_worker, args=(inference_id, payload, output_dir), daemon=True).start()
+    return job
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "MachiningAssistantMonitor/1.0"
 
@@ -1026,6 +1113,29 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as exc:
                     self.send_json({"ok": False, "runs": [], "error": str(exc)})
                 return
+            if parsed.path == "/api/inference/models":
+                self.send_json(inference_models())
+                return
+            if parsed.path == "/api/inference/status":
+                inference_id = parse_qs(parsed.query).get("inference_id", [""])[0]
+                with _jobs_lock:
+                    job = dict(_jobs.get(inference_id, {"inference_id": inference_id, "status": "unknown"}))
+                output_dir = Path(job.get("output_dir", "")) if job.get("output_dir") else None
+                if output_dir and output_dir.is_dir():
+                    report_path = output_dir / "analysis_report.json"
+                    if report_path.is_file():
+                        job["report"] = _read_json_file(report_path, {})
+                self.send_json(job)
+                return
+            if parsed.path == "/api/inference/result":
+                inference_id = parse_qs(parsed.query).get("inference_id", [""])[0]
+                if not inference_id or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for ch in inference_id):
+                    raise ValueError("inference_id inválido")
+                report_path = INFERENCE_ROOT / inference_id / "analysis_report.json"
+                if not report_path.is_file():
+                    raise FileNotFoundError("No existe el análisis solicitado")
+                self.send_json(_read_json_file(report_path, {}))
+                return
             self.send_json({"error": "not_found"}, 404)
         except Exception as exc:
             self.send_json({"error": str(exc)}, 400)
@@ -1057,6 +1167,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/training/start":
                 self.send_json(start_training(payload), 202)
+                return
+            if parsed.path == "/api/inference/start":
+                self.send_json(start_inference(payload), 202)
                 return
             self.send_json({"error": "not_found"}, 404)
         except Exception as exc:

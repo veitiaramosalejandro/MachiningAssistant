@@ -223,7 +223,10 @@ def fit_normalizer(data_dir, train_rows):
 
 def prepare_signal(pcm, normalizer, input_length, valid_frames=VALID_FRAMES):
     """Normalize every valid frame, then append normalized zero for CNN alignment."""
-    allowed = {model_input_length('LSTM-VAE', valid_frames), model_input_length('CNN1D-VAE', valid_frames)}
+    allowed = {
+        model_input_length('LSTM-VAE', valid_frames),
+        model_input_length('CNN1D-VAE', valid_frames)
+    }
     if input_length not in allowed:
         raise ValueError('input_length must equal valid_frames or its next multiple of 64')
     values = np.asarray(pcm)

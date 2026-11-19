@@ -21,10 +21,12 @@ class WavClassifier:
         self.checkpoint_file = Path(checkpoint).expanduser().resolve()
         state = torch.load(self.checkpoint_file, weights_only=True, map_location='cpu')
         if state.get('task') not in ('classification', 'fourclass'):
-            raise ValueError('Expected a WAV classification checkpoint; reconstruction and MSM checkpoints are unsupported')
+            raise ValueError(
+                'Expected a WAV classification checkpoint; reconstruction and MSM checkpoints are unsupported')
         if state.get('model_family') != model_family:
             raise ValueError(f'Checkpoint model_family must be {model_family}')
-        if state.get('sample_rate') != fourclass_data.SAMPLE_RATE or state.get('valid_frames') != fourclass_data.VALID_FRAMES:
+        if state.get('sample_rate') != fourclass_data.SAMPLE_RATE or state.get(
+                'valid_frames') != fourclass_data.VALID_FRAMES:
             raise ValueError('Checkpoint must describe a complete 44100 Hz, 220500-frame WAV sample')
         names = state.get('class_names')
         if (not isinstance(names, (list, tuple)) or len(names) < 2
@@ -62,9 +64,12 @@ class WavClassifier:
         self.framing_metadata = {}
         if model_family == 'LSTM-VAE':
             frame_size = config.get('frame_size', 1)
-            recurrent_steps = (self.input_length+frame_size-1)//frame_size
-            self.framing_metadata = {'lstm_frame_size': frame_size, 'recurrent_steps': recurrent_steps,
-                                     'lstm_frame_padding_frames': recurrent_steps*frame_size-self.input_length}
+            recurrent_steps = (self.input_length + frame_size - 1) // frame_size
+            self.framing_metadata = {
+                'lstm_frame_size': frame_size,
+                'recurrent_steps': recurrent_steps,
+                'lstm_frame_padding_frames': recurrent_steps * frame_size - self.input_length
+            }
         self.label_metadata = {key: state[key] for key in ('label_semantics', 'synthetic_only') if key in state}
 
     def predict_wav(self, path):
@@ -77,7 +82,10 @@ class WavClassifier:
         if sample_rate != self.sample_rate:
             raise ValueError(f'Expected sample rate {self.sample_rate}, received {sample_rate}')
         prepared = fourclass_data.prepare_signal(
-            pcm, self.normalizer, self.input_length, valid_frames=self.valid_frames,
+            pcm,
+            self.normalizer,
+            self.input_length,
+            valid_frames=self.valid_frames,
         )
         tensor = torch.from_numpy(np.ascontiguousarray(prepared))[None].to(self.device)
         with torch.inference_mode():
@@ -87,13 +95,14 @@ class WavClassifier:
             probabilities = logits.softmax(dim=-1)[0].cpu().tolist()
         predicted = int(np.argmax(probabilities))
         return {
-            'task': 'classification', 'model_family': self.model_family,
+            'task': 'classification',
+            'model_family': self.model_family,
             'device': str(self.device),
             'checkpoint_file': str(self.checkpoint_file),
             'sample_rate': sample_rate, 'valid_frames': self.valid_frames,
-            'duration_seconds': self.valid_frames/sample_rate,
+            'duration_seconds': self.valid_frames / sample_rate,
             'model_input_length': self.input_length,
-            'padded_frames': self.input_length-self.valid_frames,
+            'padded_frames': self.input_length - self.valid_frames,
             'num_classes': len(self.class_names), 'class_names': self.class_names,
             'predicted_class_index': predicted, 'predicted_label': self.class_names[predicted],
             'confidence': probabilities[predicted], 'confidence_uncalibrated': True,
@@ -107,7 +116,8 @@ FourClassPredictor = WavClassifier
 
 
 def run_prediction(StateClassifier, ModelConfig, model_family, argv=None):
-    parser = argparse.ArgumentParser(description='Classify one complete five-second stereo PCM16 WAV using saved weights.')
+    parser = argparse.ArgumentParser(
+        description='Classify one complete five-second stereo PCM16 WAV using saved weights.')
     parser.add_argument('--checkpoint', type=Path, required=True)
     parser.add_argument('--wav', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)

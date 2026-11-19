@@ -647,11 +647,24 @@
             <h3>Historial de aprendizaje</h3>
             <div id="learningHistory" class="history-table muted">Cargando ejecuciones anteriores...</div>
         </article>
+        <article class="card span-12">
+            <h2>5. Análisis independiente de una grabación</h2>
+            <p class="muted">Ejecuta inferencia con un checkpoint existente sin volver a entrenar el modelo.</p>
+            <div class="config-grid">
+                <label>Modelo entrenado<select id="inferenceModel"><option value="">Cargando modelos...</option></select></label>
+                <label>Grabación WAV<select id="inferenceRecording"><option value="">Selecciona una grabación</option></select></label>
+            </div>
+            <button id="inferenceButton" onclick="startInference()" disabled>Analizar grabación</button>
+            <div id="inferenceResult"></div>
+            <div id="inferenceSummary"></div>
+        </article>
     </section>
 </main>
 <script>
     let executions = [];
     let localRecordings = [];
+    let localRoot = '';
+    let inferenceModels = [];
     let selectedImport = null;
     let pollTimer = null;
     const $ = id => document.getElementById(id);
@@ -785,12 +798,14 @@
             $('serviceDetail').textContent = `${s.service_url} · almacenamiento ${s.data_root}`;
             const local = await api('/api/local-dataset');
             localRecordings = local.recordings || [];
+            localRoot = local.root || '';
             $('localDatasetInfo').textContent = local.recording_count;
             $('localDatasetDetail').textContent = `${local.recording_count} ${t('grabaciones válidas')} · ${local.source_group_count} ${t('grupos de adquisición')} · ${(local.duration_s / 60).toFixed(1)} ${t('min')}`;
             $('localImportButton').disabled = local.recording_count < 3;
             $('localRecording').innerHTML = localRecordings.map((item, i) => `<option value="${i}">${esc(item.folder)} · ${Number(item.duration_s).toFixed(1)} s</option>`).join('') || '<option value="">No hay grabaciones válidas</option>';
             $('singleLocalImportButton').disabled = !localRecordings.length;
             showLocalRecording();
+            await loadInferenceModels();
             const m = await api('/api/machines');
             $('machines').innerHTML = (m.machines || []).map(id => `<option value="${esc(id)}">${esc((m.machineNames || {})[id] || id)}</option>`).join('');
             await loadExecutions();
@@ -822,6 +837,57 @@
         return [...$('executions').selectedOptions].map(o => executions[Number(o.value)]);
     }
 
+    function setInferenceRecordings(items) {
+        const select = $('inferenceRecording');
+        select.innerHTML = items.map((item, index) => `<option value="${index}">${esc(item.label)}</option>`).join('') || '<option value="">Selecciona una grabación</option>';
+        select._items = items;
+        $('inferenceButton').disabled = !inferenceModels.length || !items.length;
+    }
+
+    async function loadInferenceModels() {
+        const data = await api('/api/inference/models');
+        inferenceModels = data.models || [];
+        $('inferenceModel').innerHTML = inferenceModels.map((item, index) => `<option value="${index}">${esc(item.training_id)} · ${esc(item.model)}</option>`).join('') || '<option value="">No hay best.pt disponibles</option>';
+        setInferenceRecordings(localRecordings.map(item => ({label: `Local · ${item.folder}`, wav_path: `${localRoot}/${item.folder}/audio_000000.wav`, recording_dir: `${localRoot}/${item.folder}`})));
+    }
+
+    function selectedInferenceRecording() {
+        return ($('inferenceRecording')._items || [])[Number($('inferenceRecording').value)];
+    }
+
+    async function startInference() {
+        const model = inferenceModels[Number($('inferenceModel').value)];
+        const recording = selectedInferenceRecording();
+        if (!model || !recording) return;
+        $('inferenceButton').disabled = true;
+        $('inferenceResult').innerHTML = '<p>Analizando la grabación sin reentrenar...</p>';
+        try {
+            const job = await api('/api/inference/start', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({training_id: model.training_id, ...recording})});
+            $('inferenceResult').innerHTML = `<p>Análisis <span class="pill">${esc(job.inference_id)}</span> iniciado.</p>`;
+            const poll = async () => {
+                const status = await api('/api/inference/status?inference_id=' + encodeURIComponent(job.inference_id));
+                if (status.status === 'completed') {
+                    renderInferenceResult(status.report || await api('/api/inference/result?inference_id=' + encodeURIComponent(job.inference_id)));
+                    $('inferenceButton').disabled = false;
+                } else if (status.status === 'failed') {
+                    $('inferenceResult').innerHTML = `<p class="bad">${esc(status.error || 'Falló el análisis')}</p>`;
+                    $('inferenceButton').disabled = false;
+                } else {
+                    setTimeout(poll, 1000);
+                }
+            };
+            await poll();
+        } catch (e) {
+            $('inferenceResult').innerHTML = `<p class="bad">${esc(e.message)}</p>`;
+            $('inferenceButton').disabled = false;
+        }
+    }
+
+    function renderInferenceResult(report) {
+        const s = report.summary || {};
+        $('inferenceSummary').innerHTML = `<div class="grid"><div class="card span-3"><div class="muted">MSE medio</div><div class="metric">${Number.isFinite(Number(s.mse_mean)) ? Number(s.mse_mean).toFixed(4) : '—'}</div></div><div class="card span-3"><div class="muted">MSE máximo</div><div class="metric">${Number.isFinite(Number(s.mse_max)) ? Number(s.mse_max).toFixed(4) : '—'}</div></div><div class="card span-3"><div class="muted">Ventanas anómalas</div><div class="metric">${Number(s.anomalous_window_percent || 0).toFixed(1)}%</div></div><div class="card span-3"><div class="muted">Incidentes</div><div class="metric">${esc(s.incident_count ?? '—')}</div></div></div><p class="notice">Primera anomalía: ${esc(s.first_anomaly_s == null ? '—' : Number(s.first_anomaly_s).toFixed(2) + ' s')} · Última: ${esc(s.last_anomaly_s == null ? '—' : Number(s.last_anomaly_s).toFixed(2) + ' s')} · Confianza estadística, no probabilidad de fallo.</p><details><summary>Comparación con análisis anteriores</summary><pre>${esc(JSON.stringify(report.comparison || [], null, 2))}</pre></details>`;
+    }
+
     const showServiceSelected = showSelected;
     showSelected = async function () {
         await showServiceSelected();
@@ -837,6 +903,8 @@
             return;
         }
         const e = list[0];
+        const audio = e.local_recording?.audio?.[0];
+        if (audio && e.local_recording?.folder) setInferenceRecordings([{label: `Servicio · ${e.executionId}`, wav_path: `${e.local_recording.folder}/${audio.name}`, recording_dir: e.local_recording.folder}]);
         $('details').innerHTML = `<table><tr><th>Execution</th><td>${esc(e.executionId)}</td></tr><tr><th>Estado</th><td>${esc(e.state)}</td></tr><tr><th>Duración</th><td>${Number(e.durationSeconds || 0).toFixed(3)} s</td></tr><tr><th>Detalle</th><td>${esc(e.detail)}</td></tr><tr><th>Carpeta local</th><td>${esc(e.local_recording?.folder)}</td></tr><tr><th>Audio</th><td>${(e.local_recording?.audio || []).map(a => `${esc(a.name)} · ${a.sample_rate_hz} Hz · ${a.channels} ch · ${a.duration_s.toFixed(3)} s`).join('<br>') || 'No disponible'}</td></tr></table>`;
     }
 
@@ -894,6 +962,7 @@
             $('localRecordingDetail').textContent = 'Selecciona una grabación válida.';
             return;
         }
+        setInferenceRecordings(localRecordings.map(value => ({label: `Local · ${value.folder}`, wav_path: `${localRoot}/${value.folder}/audio_000000.wav`, recording_dir: `${localRoot}/${value.folder}`})));
         $('localRecordingDetail').textContent = `${Number(item.duration_s).toFixed(1)} s · ${item.sample_rate_hz} Hz · ${item.channels} canales · grupo ${item.source_group} · ${item.recording_id}`;
         $('details').innerHTML = `<table><tr><th>Fuente</th><td>Dataset/Data local</td></tr><tr><th>Carpeta</th><td>${esc(item.folder)}</td></tr><tr><th>Recording ID</th><td>${esc(item.recording_id)}</td></tr><tr><th>Grupo de adquisición</th><td>${esc(item.source_group)}</td></tr><tr><th>Duración</th><td>${Number(item.duration_s).toFixed(3)} s</td></tr><tr><th>Audio</th><td>${item.sample_rate_hz} Hz · ${item.channels} canales · WAV local</td></tr></table><p class="notice">Grabación local seleccionada para entrenamiento especializado. Al prepararla se dividirá temporalmente en train, validation y test.</p>`;
         applyLanguage();

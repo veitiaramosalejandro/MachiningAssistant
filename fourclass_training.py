@@ -34,12 +34,29 @@ from training_support import (
 
 
 SPLITS = ('train', 'val', 'test')
-DEFAULTS = {'epochs': 20, 'batch_size': 1, 'learning_rate': .0001,
-            'reconstruction_weight': .05, 'beta': .001, 'gradient_clip': 5.,
-            'threads': 2, 'seed': 42, 'eval_every': 20, 'test_during_training': True,
-            'device': 'auto'}
-LOCKED_SETTINGS = ('data_dir', 'batch_size', 'learning_rate', 'reconstruction_weight',
-                   'beta', 'gradient_clip', 'seed', 'threads')
+DEFAULTS = {
+    'epochs': 20,
+    'batch_size': 1,
+    'learning_rate': .0001,
+    'reconstruction_weight': .05,
+    'beta': .001,
+    'gradient_clip': 5.,
+    'threads': 2,
+    'seed': 42,
+    'eval_every': 20,
+    'test_during_training': True,
+    'device': 'auto'
+}
+LOCKED_SETTINGS = (
+    'data_dir',
+    'batch_size',
+    'learning_rate',
+    'reconstruction_weight',
+    'beta',
+    'gradient_clip',
+    'seed',
+    'threads'
+)
 
 
 def joint_loss(output, labels, signal, valid_frames, reconstruction_weight=.05, beta=.001):

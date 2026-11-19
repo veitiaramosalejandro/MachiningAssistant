@@ -1,0 +1,6 @@
+{
+    "ollama-copilot.baseUrl": "http://172.16.10.194:11500",
+    "ollama-copilot.chatModel": "nemotron3:33b-bf16",
+    "ollama-chat.serverUrl": "http://172.16.10.194:11500",
+    "ollama-participant.model": "nemotron3:33b-bf16"
+}
