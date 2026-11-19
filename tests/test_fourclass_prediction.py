@@ -12,6 +12,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import fourclass_prediction as prediction
 from Dataset.Preprocessing import fourclass_data
+from Dataset.Preprocessing.cnc_features import CncFeatureNormalizer, FEATURE_NAMES
 
 
 DEFAULT_NAMES = ['good', 'sufficient', 'bad', 'very_bad']
@@ -39,6 +40,20 @@ class TinyClassifier(torch.nn.Module):
         return {'logits': self.head(features)}
 
 
+class TinyMultimodalClassifier(torch.nn.Module):
+    def __init__(self, config, num_classes, context_dim, context_embedding_dim):
+        super().__init__()
+        self.head = torch.nn.Linear(config.input_channels + context_dim, num_classes)
+        self.received_context = None
+
+    def forward(self, values, reconstruct=True, *, context=None):
+        assert reconstruct is False
+        assert context is not None and context.shape[0] == values.shape[0]
+        self.received_context = context.detach().clone()
+        features = values[:, :fourclass_data.VALID_FRAMES].mean(dim=1)
+        return {'logits': self.head(torch.cat((features, context), dim=-1))}
+
+
 def save_checkpoint(path, family='CNN1D-VAE', names=None, *, synthetic=True):
     names = DEFAULT_NAMES if names is None else names
     config = TinyConfig(fourclass_data.model_input_length(family))
@@ -56,6 +71,33 @@ def save_checkpoint(path, family='CNN1D-VAE', names=None, *, synthetic=True):
         payload.update(synthetic_only=True, label_semantics='Artificial sine-amplitude tiers, not real fault truth.')
     torch.save(payload, path)
     return payload
+
+
+def context_payload():
+    return {
+        'SchemaVersion': 1, 'ContextId': 'ctx-1', 'MachineId': 'machine-1',
+        'DriverSessionId': 'session-1', 'OccurredAtUtc': '2026-01-01T00:00:00Z',
+        'ActualSpindleRpm': 8000, 'ActualFeedMmPerMin': 1200,
+        'SPowerPercent': 40, 'WPowerPercent': 20,
+        'ToolDiameterMm': 10, 'ToolTeethCount': 4,
+        'ToolRemainingUsePercent': 90,
+    }
+
+
+def save_multimodal_checkpoint(path):
+    names = DEFAULT_NAMES
+    config = TinyConfig(fourclass_data.model_input_length('CNN1D-VAE'))
+    normalizer = CncFeatureNormalizer.fit_contexts([context_payload(), {
+        **context_payload(), 'ContextId': 'ctx-2', 'ActualSpindleRpm': 9000,
+    }])
+    model = TinyMultimodalClassifier(config, len(names), len(FEATURE_NAMES), 8)
+    torch.save({
+        'task': 'classification', 'model_family': 'CNN1D-VAE', 'model_config': asdict(config),
+        'sample_rate': 44100, 'valid_frames': 220500, 'class_names': names,
+        'num_classes': len(names), 'normalizer': {'mean_pcm': [10., -20.], 'scale_pcm': [2., 4.]},
+        'context_dim': len(FEATURE_NAMES), 'context_embedding_dim': 8,
+        'context_normalizer': normalizer.to_dict(), 'model_state_dict': model.state_dict(),
+    }, path)
 
 
 def save_wav(path, frames=220500, sample_rate=44100, channels=2):
@@ -122,6 +164,23 @@ def test_pcm_and_wav_share_preprocessing_and_predictions(tmp_path):
     assert engine.sample_rate == 44100 and engine.valid_frames == 220500
     with pytest.raises(ValueError, match='sample rate'):
         engine.predict_pcm(pcm, sample_rate=48000)
+
+
+def test_multimodal_prediction_normalizes_context_and_reports_schema(tmp_path):
+    checkpoint, wav = tmp_path/'multimodal.pt', tmp_path/'sample.wav'
+    save_multimodal_checkpoint(checkpoint)
+    save_wav(wav)
+    engine = prediction.WavClassifier(
+        checkpoint, 'CNN1D-VAE', TinyMultimodalClassifier, TinyConfig, device='cpu'
+    )
+    result = engine.predict_wav(wav, context=context_payload())
+    assert result['context_used_by_model'] is True
+    assert result['context_schema_version'] == 2
+    assert result['context_features'] == list(FEATURE_NAMES)
+    assert engine.model.received_context.shape == (1, len(FEATURE_NAMES))
+    assert torch.isfinite(engine.model.received_context).all()
+    with pytest.raises(ValueError, match='required'):
+        engine.predict_pcm(np.zeros((220500, 2), dtype=np.float32))
 
 
 @pytest.mark.parametrize('change,match', [

@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from Dataset.Preprocessing.cnc_features import CncFeatureNormalizer, FEATURE_NAMES
 from Dataset.Preprocessing import fourclass_data
 from device_support import resolve_device
 
@@ -39,6 +40,20 @@ class WavClassifier:
         self.sample_rate = state['sample_rate']
         self.valid_frames = state['valid_frames']
         self.input_length = fourclass_data.model_input_length(model_family)
+        self.context_dim = int(state.get('context_dim', 0))
+        self.context_embedding_dim = int(state.get('context_embedding_dim', 8))
+        self.context_normalizer = None
+        if self.context_dim:
+            if model_family != 'CNN1D-VAE':
+                raise ValueError('CNC multimodal inference is supported only for CNN1D-VAE')
+            if self.context_dim != len(FEATURE_NAMES):
+                raise ValueError('Checkpoint context_dim does not match the CNC feature schema')
+            try:
+                self.context_normalizer = CncFeatureNormalizer.from_dict(
+                    state['context_normalizer']
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError('Checkpoint lacks a valid CNC context normalizer') from exc
         config = state.get('model_config')
         if (not isinstance(config, dict) or config.get('sequence_length') != self.input_length
                 or config.get('input_channels') != fourclass_data.CHANNELS):
@@ -56,7 +71,15 @@ class WavClassifier:
         if 'model_state_dict' not in state:
             raise ValueError('Checkpoint lacks model_state_dict')
         self.device = resolve_device(device)
-        self.model = classifier_type(config_type(**config), num_classes=len(self.class_names))
+        model_kwargs = {}
+        if self.context_dim:
+            model_kwargs = {
+                'context_dim': self.context_dim,
+                'context_embedding_dim': self.context_embedding_dim,
+            }
+        self.model = classifier_type(
+            config_type(**config), num_classes=len(self.class_names), **model_kwargs
+        )
         self.model.load_state_dict(state['model_state_dict'])
         self.model.to(self.device)
         self.model.eval()
@@ -72,12 +95,49 @@ class WavClassifier:
             }
         self.label_metadata = {key: state[key] for key in ('label_semantics', 'synthetic_only') if key in state}
 
-    def predict_wav(self, path):
+    @staticmethod
+    def load_context(path):
+        """Load one raw MachiningContext JSON object for inference."""
+        context_path = Path(path).expanduser().resolve()
+        if not context_path.is_file():
+            raise FileNotFoundError(f'CNC context JSON not found: {context_path}')
+        payload = json.loads(context_path.read_text(encoding='utf-8-sig'))
+        if not isinstance(payload, dict):
+            raise ValueError('CNC context JSON must contain one object')
+        context = payload.get('context', payload)
+        # Playback metadata may wrap the actual context one level deeper.
+        if isinstance(context, dict) and isinstance(context.get('context'), dict):
+            context = context['context']
+        if not isinstance(context, dict):
+            raise ValueError('CNC context JSON must contain one object')
+        return context
+
+    def _prepare_context(self, context):
+        if self.context_dim == 0:
+            if context is not None:
+                raise ValueError('This audio-only checkpoint does not accept CNC context')
+            return None
+        if context is None:
+            raise ValueError('CNC context is required by this multimodal checkpoint')
+        if isinstance(context, dict):
+            values = self.context_normalizer.transform_context(context)
+        else:
+            values = np.asarray(context, dtype=np.float32)
+            if values.shape != (self.context_dim,) or not np.isfinite(values).all():
+                raise ValueError(
+                    f'Normalized context must have shape ({self.context_dim},) and finite values'
+                )
+        return torch.from_numpy(np.ascontiguousarray(values, dtype=np.float32))[None].to(self.device)
+
+    def predict_wav(self, path, context=None):
         wav_file = Path(path).expanduser().resolve()
         sample_rate, pcm = fourclass_data.read_wav(wav_file, expected_frames=self.valid_frames)
-        return {**self.predict_pcm(pcm, sample_rate=sample_rate), 'wav_file': str(wav_file)}
+        return {
+            **self.predict_pcm(pcm, sample_rate=sample_rate, context=context),
+            'wav_file': str(wav_file),
+        }
 
-    def predict_pcm(self, pcm, sample_rate=44100):
+    def predict_pcm(self, pcm, sample_rate=44100, context=None):
         """Classify one complete window of raw PCM counts from a file or stream."""
         if sample_rate != self.sample_rate:
             raise ValueError(f'Expected sample rate {self.sample_rate}, received {sample_rate}')
@@ -88,8 +148,10 @@ class WavClassifier:
             valid_frames=self.valid_frames,
         )
         tensor = torch.from_numpy(np.ascontiguousarray(prepared))[None].to(self.device)
+        context_tensor = self._prepare_context(context)
+        model_kwargs = {} if context_tensor is None else {'context': context_tensor}
         with torch.inference_mode():
-            logits = self.model(tensor, reconstruct=False)['logits']
+            logits = self.model(tensor, reconstruct=False, **model_kwargs)['logits']
             if tuple(logits.shape) != (1, len(self.class_names)) or not torch.isfinite(logits).all():
                 raise RuntimeError('Classifier returned invalid class logits')
             probabilities = logits.softmax(dim=-1)[0].cpu().tolist()
@@ -107,7 +169,14 @@ class WavClassifier:
             'predicted_class_index': predicted, 'predicted_label': self.class_names[predicted],
             'confidence': probabilities[predicted], 'confidence_uncalibrated': True,
             'class_probabilities': dict(zip(self.class_names, probabilities)),
-            'normalizer_refitted': False, **self.framing_metadata, **self.label_metadata,
+            'normalizer_refitted': False,
+            'context_used_by_model': self.context_dim > 0,
+            'context_schema_version': (
+                self.context_normalizer.to_dict()['context_schema_version']
+                if self.context_normalizer is not None else None
+            ),
+            'context_features': list(FEATURE_NAMES) if self.context_dim else [],
+            **self.framing_metadata, **self.label_metadata,
         }
 
 
@@ -120,6 +189,8 @@ def run_prediction(StateClassifier, ModelConfig, model_family, argv=None):
         description='Classify one complete five-second stereo PCM16 WAV using saved weights.')
     parser.add_argument('--checkpoint', type=Path, required=True)
     parser.add_argument('--wav', type=Path, required=True)
+    parser.add_argument('--context', type=Path,
+                        help='JSON with one raw MachiningContext for multimodal CNN1D-VAE inference')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--threads', type=int, default=2)
     parser.add_argument('--device', choices=('auto', 'cpu', 'cuda'), default='auto',
@@ -128,12 +199,16 @@ def run_prediction(StateClassifier, ModelConfig, model_family, argv=None):
     if args.threads < 1:
         parser.error('--threads must be positive')
     output = args.output.expanduser().resolve()
-    if output in (args.checkpoint.expanduser().resolve(), args.wav.expanduser().resolve()):
+    source_paths = [args.checkpoint.expanduser().resolve(), args.wav.expanduser().resolve()]
+    if args.context is not None:
+        source_paths.append(args.context.expanduser().resolve())
+    if output in source_paths:
         parser.error('Output JSON must not overwrite the checkpoint or WAV')
     torch.set_num_threads(args.threads)
     predictor = WavClassifier(args.checkpoint, model_family, StateClassifier, ModelConfig, device=args.device)
     print('Checkpoint loaded successfully.', flush=True)
-    result = predictor.predict_wav(args.wav)
+    context = predictor.load_context(args.context) if args.context is not None else None
+    result = predictor.predict_wav(args.wav, context=context)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False) + '\n', encoding='utf-8')
     print('-' * 64, flush=True)
