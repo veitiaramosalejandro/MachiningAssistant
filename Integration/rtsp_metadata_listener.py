@@ -29,9 +29,27 @@ def _safe_url(value: str) -> str:
 
 
 def _write_json(path: Path, value: dict) -> None:
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    payload = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+    temporary = path.with_name(path.name + f".{os.getpid()}.tmp")
+    for _ in range(8):
+        try:
+            temporary.write_text(payload, encoding="utf-8")
+            temporary.replace(path)
+            return
+        except PermissionError:
+            time.sleep(0.05)
+    # Status persistence must never terminate a live metadata receiver. The
+    # next status update will retry the atomic replacement.
+
+
+def _recv_exact(sock: socket.socket, count: int) -> bytes:
+    result = bytearray()
+    while len(result) < count:
+        chunk = sock.recv(count - len(result))
+        if not chunk:
+            raise ConnectionError("El servidor RTSP cerró la conexión antes de completar la trama")
+        result.extend(chunk)
+    return bytes(result)
 
 
 class RtspMetadataClient:
@@ -103,8 +121,8 @@ class RtspMetadataClient:
                 key, value = line.split(":", 1)
                 headers[key.strip().lower()] = value.strip()
         content_length = int(headers.get("content-length", "0") or 0)
-        while len(body) < content_length:
-            body += self.socket.recv(content_length - len(body))
+        if len(body) < content_length:
+            body += _recv_exact(self.socket, content_length - len(body))
         return lines[0], headers
 
     def _connect(self) -> None:
@@ -194,14 +212,10 @@ class RtspMetadataClient:
                 if first != b"$":
                     # RTSP control responses are not expected after PLAY; discard the line safely.
                     continue
-                header = self.socket.recv(3)
-                if len(header) != 3:
-                    raise ConnectionError("Trama RTP intercalada incompleta")
+                header = _recv_exact(self.socket, 3)
                 channel = header[0]
                 length = int.from_bytes(header[1:3], "big")
-                packet = self.socket.recv(length)
-                if len(packet) != length:
-                    raise ConnectionError("Paquete RTP intercalado incompleto")
+                packet = _recv_exact(self.socket, length)
                 self.status["packets_received"] += 1
                 self.status["bytes_received"] += length
                 if channel == 2:

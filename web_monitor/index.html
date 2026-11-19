@@ -520,37 +520,21 @@
             <h1>Machining Assistant</h1>
             <p>Monitoriza el servicio, prepara grabaciones y entrena modelos VAE desde un único espacio de trabajo.</p>
         </div>
-        <div class="header-actions"><div class="language-control"><label for="languageSelector" data-i18n-source="Idioma">Idioma</label><select id="languageSelector" onchange="setLanguage(this.value)"><option value="es">Español</option><option value="en">English</option><option value="pt-PT">Português (Portugal)</option></select></div><div class="status"><span id="dot" class="dot"></span><span id="statusText">Conectando...</span></div></div>
+        <div class="header-actions">
+            <div class="language-control"><label for="languageSelector" data-i18n-source="Idioma">Idioma</label><select
+                    id="languageSelector" onchange="setLanguage(this.value)">
+                <option value="es">Español</option>
+                <option value="en">English</option>
+                <option value="pt-PT">Português (Portugal)</option>
+            </select></div>
+            <div class="status"><span id="dot" class="dot"></span><span id="statusText">Conectando...</span></div>
+        </div>
     </header>
     <section class="grid">
         <article class="card span-4"><h2>Servicio</h2>
             <div id="serviceMetric" class="metric">—</div>
             <p id="serviceDetail" class="service-detail">Verificando API...</p>
             <button class="secondary" onclick="refreshAll()">Actualizar estado</button>
-        </article>
-        <article class="card span-8"><h2>Fase nueva · entrenamiento de prueba RTSP</h2>
-            <p>Configura una captura local de audio + metadata para preparar datos multimodales de CNN1D-VAE. Esta fase valida la fuente; todavía no inicia el entrenamiento ni inventa etiquetas.</p>
-            <div class="config-grid">
-                <div><label for="rtspTrainingUrl">Fuente RTSP local</label><input id="rtspTrainingUrl" value="rtsp://127.0.0.1:8555/audio" autocomplete="off"></div>
-                <div><label for="rtspUsername">Usuario RTSP</label><input id="rtspUsername" placeholder="Solo para esta comprobación" autocomplete="off"></div>
-                <div><label for="rtspPassword">Contraseña RTSP</label><input id="rtspPassword" type="password" placeholder="No se guarda en el navegador" autocomplete="new-password"></div>
-                <div><label for="rtspProbeTimeout">Tiempo máximo de comprobación</label><select id="rtspProbeTimeout"><option value="5">5 segundos</option><option value="10">10 segundos</option><option value="15" selected>15 segundos</option><option value="30">30 segundos</option></select></div>
-                <div><label for="rtspTrainingWindow">Ventana de audio</label><select id="rtspTrainingWindow"><option value="5" selected>5 segundos · 220500 muestras</option></select></div>
-                <div><label for="rtspTrainingLabels">Fuente de labels</label><select id="rtspTrainingLabels"><option value="metadata_event" selected>Eventos de metadata · pendiente de alineación</option><option value="manual_review">Revisión manual posterior</option></select></div>
-                <div><label for="rtspTrainingPolicy">Política continua</label><select id="rtspTrainingPolicy"><option value="continuous_capture_then_batch" selected>Capturar continuamente y entrenar por lotes</option><option value="capture_only">Solo capturar</option></select></div>
-                <div><label for="rtspMinLabeledWindows">Mínimo de ventanas etiquetadas</label><input id="rtspMinLabeledWindows" type="number" min="1" max="100000" value="32"></div>
-            </div>
-            <p class="muted">Modelo fijado: <strong>CNN1D-VAE</strong> · Audio esperado: <strong>44,1 kHz / 2 canales / PCM16LE</strong> · Contrato metadata: <strong>x-machining-metadata / MAM1</strong>.</p>
-            <button class="secondary" onclick="saveRtspTrainingConfig()">Guardar configuración de prueba</button>
-            <button class="secondary" onclick="resetRtspTrainingConfig()">Restablecer RTSP 8555</button>
-            <button id="rtspValidateButton" onclick="validateRtspTrainingSource()">Validar audio + metadata</button>
-            <div class="config-grid">
-                <button id="rtspListenButton" onclick="startRtspListener()">Conectar y escuchar RTSP</button>
-                <button id="rtspStopButton" class="secondary" onclick="stopRtspListener()" disabled>Desconectar</button>
-            </div>
-            <button id="rtspTrainButton" class="secondary" onclick="requestRtspTraining()" disabled>Enviar lote al entrenamiento</button>
-            <div id="rtspTrainingResult" class="source-status"><div><strong>Audio</strong><span>Sin comprobar</span></div><div><strong>Metadata</strong><span>Sin comprobar</span></div></div>
-            <pre id="rtspTrainingDetails" class="muted">La validación no modifica el stream. La escucha se inicia solo al pulsar el botón.</pre>
         </article>
         <article class="card span-4"><h2>Persistencia</h2>
             <div id="storageMetric" class="metric">—</div>
@@ -588,11 +572,94 @@
         <article class="card span-4 recording-details-card"><h2>2. Detalle de grabación</h2>
             <div id="details" class="muted">Selecciona una ejecución.</div>
         </article>
+        <article class="card span-12">
+            <h2>Fase nueva · entrenamiento de prueba RTSP</h2>
+            <p>Configura una captura local de audio + metadata para preparar datos multimodales de CNN1D-VAE. Esta fase
+                valida la fuente; todavía no inicia el entrenamiento ni inventa etiquetas.</p>
+            <div class="config-grid">
+                <div>
+                    <label for="rtspTrainingUrl">Fuente RTSP local</label>
+                    <input id="rtspTrainingUrl"
+                           value="rtsp://127.0.0.1:8555/audio"
+                           autocomplete="off">
+                </div>
+                <div>
+                    <label for="rtspUsername">Usuario RTSP</label>
+                    <input id="rtspUsername" value="admin"
+                           placeholder="Solo para esta comprobación"
+                           autocomplete="off">
+                </div>
+                <div><label for="rtspPassword">Contraseña RTSP</label>
+                    <input id="rtspPassword" type="password"
+                           placeholder="No se guarda en el navegador"
+                           autocomplete="new-password">
+                </div>
+                <div>
+                    <label for="rtspProbeTimeout">Tiempo máximo de comprobación</label>
+                    <select id="rtspProbeTimeout">
+                        <option value="5">5 segundos</option>
+                        <option value="10">10 segundos</option>
+                        <option value="15" selected>15 segundos</option>
+                        <option value="30">30 segundos</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="rtspTrainingWindow">Ventana de audio</label>
+                    <select id="rtspTrainingWindow">
+                        <option value="5" selected>5 segundos · 220500 muestras</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="rtspTrainingLabels">Fuente de labels</label>
+                    <select id="rtspTrainingLabels">
+                        <option value="metadata_event" selected>Eventos de metadata · pendiente de alineación</option>
+                        <option value="manual_review">Revisión manual posterior</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="rtspTrainingPolicy">Política continua</label>
+                    <select id="rtspTrainingPolicy">
+                        <option value="continuous_capture_then_batch" selected>Capturar continuamente y entrenar por
+                            lotes
+                        </option>
+                        <option value="capture_only">Solo capturar</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="rtspMinTrainingSeconds">Duración mínima etiquetada</label>
+                    <input
+                            id="rtspMinTrainingSeconds" type="number" min="5" max="600" step="5" value="5">
+                    <small
+                            class="muted">Entre 5 segundos y 10 minutos. Las ventanas siguen siendo de 5
+                        segundos.</small>
+                </div>
+            </div>
+            <p class="muted">Modelo fijado: <strong>CNN1D-VAE</strong> · Audio esperado: <strong>44,1 kHz / 2 canales /
+                PCM16LE</strong> · Contrato metadata: <strong>x-machining-metadata / MAM1</strong>.</p>
+            <div class="config-grid">
+                <button class="secondary" onclick="saveRtspTrainingConfig()">Guardar configuración de prueba</button>
+                <button class="secondary" onclick="resetRtspTrainingConfig()">Restablecer RTSP 8555</button>
+                <button id="rtspValidateButton" onclick="validateRtspTrainingSource()">Validar audio + metadata</button>
+                <button id="rtspListenButton" onclick="startRtspListener()">Conectar y escuchar RTSP</button>
+                <button id="rtspStopButton" class="secondary" onclick="stopRtspListener()" disabled>Desconectar</button>
+                <button id="rtspTrainButton" class="secondary" onclick="requestRtspTraining()" disabled>Enviar lote al
+                    entrenamiento
+                </button>
+            </div>
+
+            <div id="rtspTrainingResult" class="source-status">
+                <div><strong>Audio</strong><span>Sin comprobar</span></div>
+                <div><strong>Metadata</strong><span>Sin comprobar</span></div>
+            </div>
+            <pre id="rtspTrainingDetails" class="muted">La validación no modifica el stream. La escucha se inicia solo al pulsar el botón.</pre>
+        </article>
         <article class="card span-5"><h2>3. Preparar grabación para entrenamiento</h2>
             <p>Se copia el audio al workspace, se convierte a PCM16 estéreo 44,1 kHz y se crea un dataset reproducible
                 con train, val y test.</p>
             <button id="importButton" onclick="importSelected()" disabled>Preparar selección</button>
-            <button id="singleServiceImportButton" class="secondary" onclick="importSingleServiceRecording()" disabled>Preparar una grabación del servicio</button>
+            <button id="singleServiceImportButton" class="secondary" onclick="importSingleServiceRecording()" disabled>
+                Preparar una grabación del servicio
+            </button>
             <div id="importResult"></div>
         </article>
         <article class="card span-7"><h2>Preset de configuración</h2>
@@ -621,12 +688,13 @@
                     <option value="200">Larga · 200 ms solicitados</option>
                     <option value="500">Extensa · 500 ms solicitados</option>
                 </select></div>
-                <div><label for="latentDim">Dimensión latente</label><select id="latentDim"
-                                                                             onchange="updateConfigHelp()">
-                    <option value="8">8 · compacto</option>
-                    <option value="16" selected>16 · recomendado</option>
-                    <option value="32">32 · mayor capacidad</option>
-                </select></div>
+                <div>
+                    <label for="latentDim">Dimensión latente</label>
+                    <select id="latentDim" onchange="updateConfigHelp()">
+                        <option value="8">8 · compacto</option>
+                        <option value="16" selected>16 · recomendado</option>
+                        <option value="32">32 · mayor capacidad</option>
+                    </select></div>
                 <div><label for="device">Dispositivo</label><select id="device" onchange="updateConfigHelp()">
                     <option value="auto" selected>Auto · CUDA si está disponible</option>
                     <option value="cuda">CUDA · obligatorio</option>
@@ -663,7 +731,8 @@
                     <option value="10" selected>10 épocas · recomendado</option>
                     <option value="20">20 épocas · rápido</option>
                 </select></div>
-                <div><label for="earlyStoppingPatience">Paciencia de parada temprana</label><select id="earlyStoppingPatience" onchange="updateConfigHelp()">
+                <div><label for="earlyStoppingPatience">Paciencia de parada temprana</label><select
+                        id="earlyStoppingPatience" onchange="updateConfigHelp()">
                     <option value="0">Desactivada</option>
                     <option value="3">3 evaluaciones</option>
                     <option value="5" selected>5 evaluaciones · recomendado</option>
@@ -700,8 +769,12 @@
             <h2>5. Análisis independiente de una grabación</h2>
             <p class="muted">Ejecuta inferencia con un checkpoint existente sin volver a entrenar el modelo.</p>
             <div class="config-grid">
-                <label>Modelo entrenado<select id="inferenceModel"><option value="">Cargando modelos...</option></select></label>
-                <label>Grabación WAV<select id="inferenceRecording"><option value="">Selecciona una grabación</option></select></label>
+                <label>Modelo entrenado<select id="inferenceModel">
+                    <option value="">Cargando modelos...</option>
+                </select></label>
+                <label>Grabación WAV<select id="inferenceRecording">
+                    <option value="">Selecciona una grabación</option>
+                </select></label>
             </div>
             <button id="inferenceButton" onclick="startInference()" disabled>Analizar grabación</button>
             <div id="inferenceResult"></div>
@@ -723,86 +796,365 @@
     const TRANSLATIONS = {
         es: {},
         en: {
-            'Idioma': 'Language', 'Español': 'Spanish', 'Português (Portugal)': 'Portuguese (Portugal)',
+            'Idioma': 'Language',
+            'Español': 'Spanish',
+            'Português (Portugal)': 'Portuguese (Portugal)',
             'Industrial audio intelligence · local control plane': 'Industrial audio intelligence · local control plane',
             'Monitoriza el servicio, prepara grabaciones y entrena modelos VAE desde un único espacio de trabajo.': 'Monitor the service, prepare recordings and train VAE models from one workspace.',
-            'Conectando...': 'Connecting...', 'Servicio': 'Service', 'Verificando API...': 'Checking API...', 'Actualizar estado': 'Refresh status',
-            'Persistencia': 'Persistence', 'Verificando PostgreSQL y Qdrant...': 'Checking PostgreSQL and Qdrant...', 'Resumen operativo': 'Operational summary',
-            'Selecciona una máquina para consultar ejecuciones.': 'Select a machine to inspect recordings.', '1. Conexión y ejecuciones': '1. Connection and recordings',
-            'Máquina': 'Machine', 'Grabaciones completadas': 'Completed recordings', 'Las ejecuciones con fallo de audio o sin WAV no son candidatas de entrenamiento.': 'Recordings with audio failures or without WAV are not training candidates.',
-            'Fuente local': 'Local source', 'Dataset local disponible para crear una importación reproducible.': 'Local dataset available for a reproducible import.', 'Comprobando Dataset/Data...': 'Checking Dataset/Data...',
-            'Grabación específica': 'Specific recording', 'Cargando grabaciones...': 'Loading recordings...', 'Selecciona una grabación para preparar un entrenamiento especializado.': 'Select a recording to prepare specialized training.',
-            'Preparar grabación seleccionada': 'Prepare selected recording', 'Preparar Dataset/Data completo': 'Prepare complete Dataset/Data',
-            '2. Detalle de grabación': '2. Recording details', 'Selecciona una ejecución.': 'Select a recording.', '3. Preparar grabación para entrenamiento': '3. Prepare recording for training',
+            'Conectando...': 'Connecting...',
+            'Servicio': 'Service',
+            'Verificando API...': 'Checking API...',
+            'Actualizar estado': 'Refresh status',
+            'Persistencia': 'Persistence',
+            'Verificando PostgreSQL y Qdrant...': 'Checking PostgreSQL and Qdrant...',
+            'Resumen operativo': 'Operational summary',
+            'Selecciona una máquina para consultar ejecuciones.': 'Select a machine to inspect recordings.',
+            '1. Conexión y ejecuciones': '1. Connection and recordings',
+            'Máquina': 'Machine',
+            'Grabaciones completadas': 'Completed recordings',
+            'Las ejecuciones con fallo de audio o sin WAV no son candidatas de entrenamiento.': 'Recordings with audio failures or without WAV are not training candidates.',
+            'Fuente local': 'Local source',
+            'Dataset local disponible para crear una importación reproducible.': 'Local dataset available for a reproducible import.',
+            'Comprobando Dataset/Data...': 'Checking Dataset/Data...',
+            'Grabación específica': 'Specific recording',
+            'Cargando grabaciones...': 'Loading recordings...',
+            'Selecciona una grabación para preparar un entrenamiento especializado.': 'Select a recording to prepare specialized training.',
+            'Preparar grabación seleccionada': 'Prepare selected recording',
+            'Preparar Dataset/Data completo': 'Prepare complete Dataset/Data',
+            '2. Detalle de grabación': '2. Recording details',
+            'Selecciona una ejecución.': 'Select a recording.',
+            '3. Preparar grabación para entrenamiento': '3. Prepare recording for training',
             'Se copia el audio al workspace, se convierte a PCM16 estéreo 44,1 kHz y se crea un dataset reproducible con train, val y test.': 'The audio is copied to the workspace, converted to stereo PCM16 at 44.1 kHz, and a reproducible train/validation/test dataset is created.',
-            'Preparar selección': 'Prepare selection', 'Preset de configuración': 'Configuration preset', 'Selecciona un perfil cerrado para evitar combinaciones incompatibles. Puedes ajustar los parámetros detallados en el panel de entrenamiento.': 'Select a closed profile to avoid incompatible combinations. Detailed parameters can be adjusted in the training panel.',
-            'Perfil recomendado': 'Recommended profile', 'Especializado · CNN 2048 · recomendado': 'Specialized · CNN 2048 · recommended', 'Contexto largo · CNN 8192': 'Long context · CNN 8192', 'Conservador · aprendizaje estable': 'Conservative · stable learning',
-            'Para una sola grabación se recomienda el perfil Especializado.': 'The Specialized profile is recommended for a single recording.', '4. Configuración y entrenamiento': '4. Configuration and training',
-            'Primero prepara al menos tres grabaciones.': 'Prepare a data source before training.', 'Arquitectura': 'Architecture', 'Modelo': 'Model', 'CNN1D-VAE · recomendado': 'CNN1D-VAE · recommended', 'LSTM-VAE · experimental': 'LSTM-VAE · experimental',
-            'Duración de ventana': 'Window duration', 'Corta · 50 ms solicitados': 'Short · 50 ms requested', 'Media · 100 ms solicitados': 'Medium · 100 ms requested', 'Larga · 200 ms solicitados': 'Long · 200 ms requested', 'Extensa · 500 ms solicitados': 'Extended · 500 ms requested',
-            'Dimensión latente': 'Latent dimension', '8 · compacto': '8 · compact', '16 · recomendado': '16 · recommended', '32 · mayor capacidad': '32 · higher capacity', 'Dispositivo': 'Device', 'Auto · CUDA si está disponible': 'Auto · CUDA if available', 'CUDA · obligatorio': 'CUDA · required', 'CPU': 'CPU',
-            'Entrenamiento': 'Training', 'Épocas máximas': 'Maximum epochs', '20 · exploración': '20 · exploration', '40 · baseline': '40 · baseline', '60 · recomendado': '60 · recommended', '100 · estudio': '100 · study', '120 · prolongado': '120 · extended', '200 · experimental': '200 · experimental', '350 · investigación': '350 · research',
-            'Batch size': 'Batch size', '8 · estable': '8 · stable', '16 · más rendimiento': '16 · more throughput', '32 · alta memoria': '32 · high memory', 'Learning rate': 'Learning rate', '0.0003 · conservador': '0.0003 · conservative', '0.001 · recomendado': '0.001 · recommended',
-            'Beta VAE': 'VAE beta', '0.0001 · reconstrucción': '0.0001 · reconstruction', '0.001 · recomendado': '0.001 · recommended', '0.01 · regularización': '0.01 · regularization', 'Evaluar cada': 'Evaluate every', '5 épocas · detallado': '5 epochs · detailed', '10 épocas · recomendado': '10 epochs · recommended', '20 épocas · rápido': '20 epochs · fast',
-            'Iniciar entrenamiento': 'Start training', 'Salida y progreso': 'Output and progress', 'Esperando una operación.': 'Waiting for an operation.', 'Resultado visual del entrenamiento': 'Visual training result', 'Scores por contexto': 'Scores by context', 'Ventanas con mayor score': 'Highest-scoring windows', 'Historial de aprendizaje': 'Learning history',
-            'Operación': 'Operation', 'Ventanas': 'Windows', 'Media': 'Mean', 'Máximo': 'Maximum', 'Tiempo': 'Time', 'Score': 'Score', 'Herramienta': 'Tool', 'Eventos': 'Events', 'No hay contexto operativo disponible.': 'No operational context is available.', 'No hay predicciones disponibles.': 'No predictions are available.', 'No se pudo cargar el resultado visual:': 'The visual result could not be loaded:', 'No se pudo cargar el historial:': 'The history could not be loaded:',
-            'Porcentaje de aprendizaje de esta ejecución': 'Learning percentage for this run', 'Aprendizaje global': 'Overall learning', 'Generalización': 'Generalization', 'Progreso hasta mejor época': 'Progress to best epoch', 'Indicador relativo de reducción del error; no es accuracy ni porcentaje de detección.': 'Relative error-reduction indicator; it is not accuracy or detection percentage.',
-            'READY': 'READY', 'PARTIAL': 'PARTIAL', 'OFFLINE': 'OFFLINE'
+            'Preparar selección': 'Prepare selection',
+            'Preset de configuración': 'Configuration preset',
+            'Selecciona un perfil cerrado para evitar combinaciones incompatibles. Puedes ajustar los parámetros detallados en el panel de entrenamiento.': 'Select a closed profile to avoid incompatible combinations. Detailed parameters can be adjusted in the training panel.',
+            'Perfil recomendado': 'Recommended profile',
+            'Especializado · CNN 2048 · recomendado': 'Specialized · CNN 2048 · recommended',
+            'Contexto largo · CNN 8192': 'Long context · CNN 8192',
+            'Conservador · aprendizaje estable': 'Conservative · stable learning',
+            'Para una sola grabación se recomienda el perfil Especializado.': 'The Specialized profile is recommended for a single recording.',
+            '4. Configuración y entrenamiento': '4. Configuration and training',
+            'Primero prepara al menos tres grabaciones.': 'Prepare a data source before training.',
+            'Arquitectura': 'Architecture',
+            'Modelo': 'Model',
+            'CNN1D-VAE · recomendado': 'CNN1D-VAE · recommended',
+            'LSTM-VAE · experimental': 'LSTM-VAE · experimental',
+            'Duración de ventana': 'Window duration',
+            'Corta · 50 ms solicitados': 'Short · 50 ms requested',
+            'Media · 100 ms solicitados': 'Medium · 100 ms requested',
+            'Larga · 200 ms solicitados': 'Long · 200 ms requested',
+            'Extensa · 500 ms solicitados': 'Extended · 500 ms requested',
+            'Dimensión latente': 'Latent dimension',
+            '8 · compacto': '8 · compact',
+            '16 · recomendado': '16 · recommended',
+            '32 · mayor capacidad': '32 · higher capacity',
+            'Dispositivo': 'Device',
+            'Auto · CUDA si está disponible': 'Auto · CUDA if available',
+            'CUDA · obligatorio': 'CUDA · required',
+            'CPU': 'CPU',
+            'Entrenamiento': 'Training',
+            'Épocas máximas': 'Maximum epochs',
+            '20 · exploración': '20 · exploration',
+            '40 · baseline': '40 · baseline',
+            '60 · recomendado': '60 · recommended',
+            '100 · estudio': '100 · study',
+            '120 · prolongado': '120 · extended',
+            '200 · experimental': '200 · experimental',
+            '350 · investigación': '350 · research',
+            'Batch size': 'Batch size',
+            '8 · estable': '8 · stable',
+            '16 · más rendimiento': '16 · more throughput',
+            '32 · alta memoria': '32 · high memory',
+            'Learning rate': 'Learning rate',
+            '0.0003 · conservador': '0.0003 · conservative',
+            '0.001 · recomendado': '0.001 · recommended',
+            'Beta VAE': 'VAE beta',
+            '0.0001 · reconstrucción': '0.0001 · reconstruction',
+            '0.001 · recomendado': '0.001 · recommended',
+            '0.01 · regularización': '0.01 · regularization',
+            'Evaluar cada': 'Evaluate every',
+            '5 épocas · detallado': '5 epochs · detailed',
+            '10 épocas · recomendado': '10 epochs · recommended',
+            '20 épocas · rápido': '20 epochs · fast',
+            'Iniciar entrenamiento': 'Start training',
+            'Salida y progreso': 'Output and progress',
+            'Esperando una operación.': 'Waiting for an operation.',
+            'Resultado visual del entrenamiento': 'Visual training result',
+            'Scores por contexto': 'Scores by context',
+            'Ventanas con mayor score': 'Highest-scoring windows',
+            'Historial de aprendizaje': 'Learning history',
+            'Operación': 'Operation',
+            'Ventanas': 'Windows',
+            'Media': 'Mean',
+            'Máximo': 'Maximum',
+            'Tiempo': 'Time',
+            'Score': 'Score',
+            'Herramienta': 'Tool',
+            'Eventos': 'Events',
+            'No hay contexto operativo disponible.': 'No operational context is available.',
+            'No hay predicciones disponibles.': 'No predictions are available.',
+            'No se pudo cargar el resultado visual:': 'The visual result could not be loaded:',
+            'No se pudo cargar el historial:': 'The history could not be loaded:',
+            'Porcentaje de aprendizaje de esta ejecución': 'Learning percentage for this run',
+            'Aprendizaje global': 'Overall learning',
+            'Generalización': 'Generalization',
+            'Progreso hasta mejor época': 'Progress to best epoch',
+            'Indicador relativo de reducción del error; no es accuracy ni porcentaje de detección.': 'Relative error-reduction indicator; it is not accuracy or detection percentage.',
+            'READY': 'READY',
+            'PARTIAL': 'PARTIAL',
+            'OFFLINE': 'OFFLINE'
         },
         'pt-PT': {
-            'Idioma': 'Idioma', 'Español': 'Espanhol', 'Português (Portugal)': 'Português (Portugal)',
+            'Idioma': 'Idioma',
+            'Español': 'Espanhol',
+            'Português (Portugal)': 'Português (Portugal)',
             'Industrial audio intelligence · local control plane': 'Industrial audio intelligence · plano de controlo local',
             'Monitoriza el servicio, prepara grabaciones y entrena modelos VAE desde un único espacio de trabajo.': 'Monitorize o serviço, prepare gravações e treine modelos VAE num único espaço de trabalho.',
-            'Conectando...': 'A ligar...', 'Servicio': 'Serviço', 'Verificando API...': 'A verificar a API...', 'Actualizar estado': 'Atualizar estado',
-            'Persistencia': 'Persistência', 'Verificando PostgreSQL y Qdrant...': 'A verificar PostgreSQL e Qdrant...', 'Resumen operativo': 'Resumo operacional',
-            'Selecciona una máquina para consultar ejecuciones.': 'Selecione uma máquina para consultar gravações.', '1. Conexión y ejecuciones': '1. Ligação e gravações',
-            'Máquina': 'Máquina', 'Grabaciones completadas': 'Gravações concluídas', 'Las ejecuciones con fallo de audio o sin WAV no son candidatas de entrenamiento.': 'Gravações com falhas de áudio ou sem WAV não são candidatas a treino.',
-            'Fuente local': 'Fonte local', 'Dataset local disponible para crear una importación reproducible.': 'Dataset local disponível para criar uma importação reproduzível.', 'Comprobando Dataset/Data...': 'A verificar Dataset/Data...',
-            'Grabación específica': 'Gravação específica', 'Cargando grabaciones...': 'A carregar gravações...', 'Selecciona una grabación para preparar un entrenamiento especializado.': 'Selecione uma gravação para preparar um treino especializado.',
-            'Preparar grabación seleccionada': 'Preparar gravação selecionada', 'Preparar Dataset/Data completo': 'Preparar Dataset/Data completo',
-            '2. Detalle de grabación': '2. Detalhes da gravação', 'Selecciona una ejecución.': 'Selecione uma gravação.', '3. Preparar grabación para entrenamiento': '3. Preparar gravação para treino',
+            'Conectando...': 'A ligar...',
+            'Servicio': 'Serviço',
+            'Verificando API...': 'A verificar a API...',
+            'Actualizar estado': 'Atualizar estado',
+            'Persistencia': 'Persistência',
+            'Verificando PostgreSQL y Qdrant...': 'A verificar PostgreSQL e Qdrant...',
+            'Resumen operativo': 'Resumo operacional',
+            'Selecciona una máquina para consultar ejecuciones.': 'Selecione uma máquina para consultar gravações.',
+            '1. Conexión y ejecuciones': '1. Ligação e gravações',
+            'Máquina': 'Máquina',
+            'Grabaciones completadas': 'Gravações concluídas',
+            'Las ejecuciones con fallo de audio o sin WAV no son candidatas de entrenamiento.': 'Gravações com falhas de áudio ou sem WAV não são candidatas a treino.',
+            'Fuente local': 'Fonte local',
+            'Dataset local disponible para crear una importación reproducible.': 'Dataset local disponível para criar uma importação reproduzível.',
+            'Comprobando Dataset/Data...': 'A verificar Dataset/Data...',
+            'Grabación específica': 'Gravação específica',
+            'Cargando grabaciones...': 'A carregar gravações...',
+            'Selecciona una grabación para preparar un entrenamiento especializado.': 'Selecione uma gravação para preparar um treino especializado.',
+            'Preparar grabación seleccionada': 'Preparar gravação selecionada',
+            'Preparar Dataset/Data completo': 'Preparar Dataset/Data completo',
+            '2. Detalle de grabación': '2. Detalhes da gravação',
+            'Selecciona una ejecución.': 'Selecione uma gravação.',
+            '3. Preparar grabación para entrenamiento': '3. Preparar gravação para treino',
             'Se copia el audio al workspace, se convierte a PCM16 estéreo 44,1 kHz y se crea un dataset reproducible con train, val y test.': 'O áudio é copiado para o workspace, convertido para PCM16 estéreo a 44,1 kHz e é criado um dataset reproduzível de treino/validação/teste.',
-            'Preparar selección': 'Preparar seleção', 'Preset de configuración': 'Perfil de configuração', 'Selecciona un perfil cerrado para evitar combinaciones incompatibles. Puedes ajustar los parámetros detallados en el panel de entrenamiento.': 'Selecione um perfil fechado para evitar combinações incompatíveis. Pode ajustar os parâmetros no painel de treino.',
-            'Perfil recomendado': 'Perfil recomendado', 'Especializado · CNN 2048 · recomendado': 'Especializado · CNN 2048 · recomendado', 'Contexto largo · CNN 8192': 'Contexto longo · CNN 8192', 'Conservador · aprendizaje estable': 'Conservador · aprendizagem estável',
-            'Para una sola grabación se recomienda el perfil Especializado.': 'Para uma única gravação recomenda-se o perfil Especializado.', '4. Configuración y entrenamiento': '4. Configuração e treino',
-            'Primero prepara al menos tres grabaciones.': 'Prepare uma fonte de dados antes do treino.', 'Arquitectura': 'Arquitetura', 'Modelo': 'Modelo', 'CNN1D-VAE · recomendado': 'CNN1D-VAE · recomendado', 'LSTM-VAE · experimental': 'LSTM-VAE · experimental',
-            'Duración de ventana': 'Duração da janela', 'Corta · 50 ms solicitados': 'Curta · 50 ms solicitados', 'Media · 100 ms solicitados': 'Média · 100 ms solicitados', 'Larga · 200 ms solicitados': 'Longa · 200 ms solicitados', 'Extensa · 500 ms solicitados': 'Extensa · 500 ms solicitados',
-            'Dimensión latente': 'Dimensão latente', '8 · compacto': '8 · compacto', '16 · recomendado': '16 · recomendado', '32 · mayor capacidad': '32 · maior capacidade', 'Dispositivo': 'Dispositivo', 'Auto · CUDA si está disponible': 'Auto · CUDA se disponível', 'CUDA · obligatorio': 'CUDA · obrigatório', 'CPU': 'CPU',
-            'Entrenamiento': 'Treino', 'Épocas máximas': 'Épocas máximas', '20 · exploración': '20 · exploração', '40 · baseline': '40 · baseline', '60 · recomendado': '60 · recomendado', '100 · estudio': '100 · estudo', '120 · prolongado': '120 · prolongado', '200 · experimental': '200 · experimental', '350 · investigación': '350 · investigação',
-            'Batch size': 'Tamanho do batch', '8 · estable': '8 · estável', '16 · más rendimiento': '16 · maior desempenho', '32 · alta memoria': '32 · muita memória', 'Learning rate': 'Taxa de aprendizagem', '0.0003 · conservador': '0.0003 · conservador', '0.001 · recomendado': '0.001 · recomendado',
-            'Beta VAE': 'Beta VAE', '0.0001 · reconstrucción': '0.0001 · reconstrução', '0.001 · recomendado': '0.001 · recomendado', '0.01 · regularización': '0.01 · regularização', 'Evaluar cada': 'Avaliar a cada', '5 épocas · detallado': '5 épocas · detalhado', '10 épocas · recomendado': '10 épocas · recomendado', '20 épocas · rápido': '20 épocas · rápido',
-            'Iniciar entrenamiento': 'Iniciar treino', 'Salida y progreso': 'Saída e progresso', 'Esperando una operación.': 'A aguardar uma operação.', 'Resultado visual del entrenamiento': 'Resultado visual do treino', 'Scores por contexto': 'Scores por contexto', 'Ventanas con mayor score': 'Janelas com maior score', 'Historial de aprendizaje': 'Histórico de aprendizagem',
-            'Operación': 'Operação', 'Ventanas': 'Janelas', 'Media': 'Média', 'Máximo': 'Máximo', 'Tiempo': 'Tempo', 'Score': 'Score', 'Herramienta': 'Ferramenta', 'Eventos': 'Eventos', 'No hay contexto operativo disponible.': 'Não existe contexto operacional disponível.', 'No hay predicciones disponibles.': 'Não existem previsões disponíveis.', 'No se pudo cargar el resultado visual:': 'Não foi possível carregar o resultado visual:', 'No se pudo cargar el historial:': 'Não foi possível carregar o histórico:',
-            'Porcentaje de aprendizaje de esta ejecución': 'Percentagem de aprendizagem desta execução', 'Aprendizaje global': 'Aprendizagem global', 'Generalización': 'Generalização', 'Progreso hasta mejor época': 'Progresso até à melhor época', 'Indicador relativo de reducción del error; no es accuracy ni porcentaje de detección.': 'Indicador relativo de redução do erro; não é accuracy nem percentagem de deteção.',
-            'READY': 'READY', 'PARTIAL': 'PARCIAL', 'OFFLINE': 'OFFLINE'
+            'Preparar selección': 'Preparar seleção',
+            'Preset de configuración': 'Perfil de configuração',
+            'Selecciona un perfil cerrado para evitar combinaciones incompatibles. Puedes ajustar los parámetros detallados en el panel de entrenamiento.': 'Selecione um perfil fechado para evitar combinações incompatíveis. Pode ajustar os parâmetros no painel de treino.',
+            'Perfil recomendado': 'Perfil recomendado',
+            'Especializado · CNN 2048 · recomendado': 'Especializado · CNN 2048 · recomendado',
+            'Contexto largo · CNN 8192': 'Contexto longo · CNN 8192',
+            'Conservador · aprendizaje estable': 'Conservador · aprendizagem estável',
+            'Para una sola grabación se recomienda el perfil Especializado.': 'Para uma única gravação recomenda-se o perfil Especializado.',
+            '4. Configuración y entrenamiento': '4. Configuração e treino',
+            'Primero prepara al menos tres grabaciones.': 'Prepare uma fonte de dados antes do treino.',
+            'Arquitectura': 'Arquitetura',
+            'Modelo': 'Modelo',
+            'CNN1D-VAE · recomendado': 'CNN1D-VAE · recomendado',
+            'LSTM-VAE · experimental': 'LSTM-VAE · experimental',
+            'Duración de ventana': 'Duração da janela',
+            'Corta · 50 ms solicitados': 'Curta · 50 ms solicitados',
+            'Media · 100 ms solicitados': 'Média · 100 ms solicitados',
+            'Larga · 200 ms solicitados': 'Longa · 200 ms solicitados',
+            'Extensa · 500 ms solicitados': 'Extensa · 500 ms solicitados',
+            'Dimensión latente': 'Dimensão latente',
+            '8 · compacto': '8 · compacto',
+            '16 · recomendado': '16 · recomendado',
+            '32 · mayor capacidad': '32 · maior capacidade',
+            'Dispositivo': 'Dispositivo',
+            'Auto · CUDA si está disponible': 'Auto · CUDA se disponível',
+            'CUDA · obligatorio': 'CUDA · obrigatório',
+            'CPU': 'CPU',
+            'Entrenamiento': 'Treino',
+            'Épocas máximas': 'Épocas máximas',
+            '20 · exploración': '20 · exploração',
+            '40 · baseline': '40 · baseline',
+            '60 · recomendado': '60 · recomendado',
+            '100 · estudio': '100 · estudo',
+            '120 · prolongado': '120 · prolongado',
+            '200 · experimental': '200 · experimental',
+            '350 · investigación': '350 · investigação',
+            'Batch size': 'Tamanho do batch',
+            '8 · estable': '8 · estável',
+            '16 · más rendimiento': '16 · maior desempenho',
+            '32 · alta memoria': '32 · muita memória',
+            'Learning rate': 'Taxa de aprendizagem',
+            '0.0003 · conservador': '0.0003 · conservador',
+            '0.001 · recomendado': '0.001 · recomendado',
+            'Beta VAE': 'Beta VAE',
+            '0.0001 · reconstrucción': '0.0001 · reconstrução',
+            '0.001 · recomendado': '0.001 · recomendado',
+            '0.01 · regularización': '0.01 · regularização',
+            'Evaluar cada': 'Avaliar a cada',
+            '5 épocas · detallado': '5 épocas · detalhado',
+            '10 épocas · recomendado': '10 épocas · recomendado',
+            '20 épocas · rápido': '20 épocas · rápido',
+            'Iniciar entrenamiento': 'Iniciar treino',
+            'Salida y progreso': 'Saída e progresso',
+            'Esperando una operación.': 'A aguardar uma operação.',
+            'Resultado visual del entrenamiento': 'Resultado visual do treino',
+            'Scores por contexto': 'Scores por contexto',
+            'Ventanas con mayor score': 'Janelas com maior score',
+            'Historial de aprendizaje': 'Histórico de aprendizagem',
+            'Operación': 'Operação',
+            'Ventanas': 'Janelas',
+            'Media': 'Média',
+            'Máximo': 'Máximo',
+            'Tiempo': 'Tempo',
+            'Score': 'Score',
+            'Herramienta': 'Ferramenta',
+            'Eventos': 'Eventos',
+            'No hay contexto operativo disponible.': 'Não existe contexto operacional disponível.',
+            'No hay predicciones disponibles.': 'Não existem previsões disponíveis.',
+            'No se pudo cargar el resultado visual:': 'Não foi possível carregar o resultado visual:',
+            'No se pudo cargar el historial:': 'Não foi possível carregar o histórico:',
+            'Porcentaje de aprendizaje de esta ejecución': 'Percentagem de aprendizagem desta execução',
+            'Aprendizaje global': 'Aprendizagem global',
+            'Generalización': 'Generalização',
+            'Progreso hasta mejor época': 'Progresso até à melhor época',
+            'Indicador relativo de reducción del error; no es accuracy ni porcentaje de detección.': 'Indicador relativo de redução do erro; não é accuracy nem percentagem de deteção.',
+            'READY': 'READY',
+            'PARTIAL': 'PARCIAL',
+            'OFFLINE': 'OFFLINE'
         }
     };
 
     Object.assign(TRANSLATIONS.en, {
-        'API': 'API', 'ready': 'ready', 'protegido/no disponible': 'protected/unavailable', 'grabaciones válidas': 'valid recordings', 'grupos de adquisición': 'acquisition groups', 'min': 'min', 'No hay grabaciones válidas': 'No valid recordings', 'ejecuciones visibles.': 'recordings visible.', 'candidatas de entrenamiento.': 'training candidates.', 'canales': 'channels', 'grupo': 'group',
-        'Fuente': 'Source', 'Carpeta': 'Folder', 'Grupo de adquisición': 'Acquisition group', 'Duración': 'Duration', 'Audio': 'Audio', 'Estado': 'Status', 'Detalle': 'Details', 'No disponible': 'Not available',
+        'API': 'API',
+        'ready': 'ready',
+        'protegido/no disponible': 'protected/unavailable',
+        'grabaciones válidas': 'valid recordings',
+        'grupos de adquisición': 'acquisition groups',
+        'min': 'min',
+        'No hay grabaciones válidas': 'No valid recordings',
+        'ejecuciones visibles.': 'recordings visible.',
+        'candidatas de entrenamiento.': 'training candidates.',
+        'canales': 'channels',
+        'grupo': 'group',
+        'Fuente': 'Source',
+        'Carpeta': 'Folder',
+        'Grupo de adquisición': 'Acquisition group',
+        'Duración': 'Duration',
+        'Audio': 'Audio',
+        'Estado': 'Status',
+        'Detalle': 'Details',
+        'No disponible': 'Not available',
         'Grabación local seleccionada para entrenamiento especializado. Al prepararla se dividirá temporalmente en train, validation y test.': 'Local recording selected for specialized training. It will be split temporally into train, validation and test.',
-        'Preparando grabaciones...': 'Preparing recordings...', 'Preparación completada.': 'Preparation completed.', 'Preparando segmentos temporales de la grabación seleccionada...': 'Preparing temporal segments of the selected recording...', 'Grabación seleccionada preparada. La validación es temporal dentro de la misma sesión.': 'Selected recording prepared. Validation is temporal within the same session.', 'Preparando Dataset/Data...': 'Preparing Dataset/Data...', 'Dataset local preparado sin mezclarlo con la fuente del servicio.': 'Local dataset prepared without mixing it with the service source.',
-        'Preparar una grabación del servicio': 'Prepare one service recording', 'Entrenamiento especializado': 'Specialized training', 'Entrenamiento': 'Training', 'iniciado.': 'started.', 'Estado final:': 'Final status:', 'Artefactos:': 'Artifacts:', 'Cargando ejecuciones anteriores...': 'Loading previous runs...', 'Todavía no hay ejecuciones persistidas.': 'There are no persisted runs yet.', 'Preparando la grabación del servicio en segmentos temporales...': 'Preparing the service recording as temporal segments...', 'Grabación del servicio preparada. La validación es temporal dentro de la misma sesión.': 'Service recording prepared. Validation is temporal within the same session.',
-        'Diferencia validation/train:': 'Validation/train gap:', 'Sin diferencia disponible': 'No gap available', 'Posible sobreajuste.': 'Possible overfitting.', 'Mejora relativa en validation': 'Relative improvement on validation', 'Mejor época:': 'Best epoch:', 'de': 'of', '40% train + 60% validation': '40% train + 60% validation',
-        'CNN1D-VAE con ventana corta: recomendado para aprender patrones locales de una grabación.': 'CNN1D-VAE with a short window: recommended for local patterns in one recording.', 'Ventana larga: captura contexto temporal mayor, pero necesita más memoria y puede reducir la cantidad útil de ventanas.': 'Long window: captures more temporal context, but needs more memory and may reduce useful windows.', 'Perfil conservador: menor capacidad y pasos más pequeños para una primera prueba estable.': 'Conservative profile: lower capacity and smaller steps for a stable first test.',
-            'CNN1D-VAE procesa patrones locales del audio.': 'CNN1D-VAE processes local audio patterns.', 'LSTM-VAE procesa la evolución temporal de la señal.': 'LSTM-VAE processes the temporal evolution of the signal.', 'Ventana solicitada:': 'Requested window:', 'duración compatible:': 'compatible duration:', 'muestras': 'samples', 'latente:': 'latent:', 'dimensiones': 'dimensions', 'épocas máximas:': 'maximum epochs:', 'Batch': 'Batch', 'ejemplos por actualización': 'examples per update', 'learning rate': 'learning rate', 'tamaño de paso': 'step size', 'beta': 'beta', 'regularización VAE': 'VAE regularization', 'evaluación cada': 'evaluation every', 'paciencia de parada temprana': 'early-stopping patience', 'evaluaciones': 'evaluations', 'dispositivo:': 'device:'
+        'Preparando grabaciones...': 'Preparing recordings...',
+        'Preparación completada.': 'Preparation completed.',
+        'Preparando segmentos temporales de la grabación seleccionada...': 'Preparing temporal segments of the selected recording...',
+        'Grabación seleccionada preparada. La validación es temporal dentro de la misma sesión.': 'Selected recording prepared. Validation is temporal within the same session.',
+        'Preparando Dataset/Data...': 'Preparing Dataset/Data...',
+        'Dataset local preparado sin mezclarlo con la fuente del servicio.': 'Local dataset prepared without mixing it with the service source.',
+        'Preparar una grabación del servicio': 'Prepare one service recording',
+        'Entrenamiento especializado': 'Specialized training',
+        'Entrenamiento': 'Training',
+        'iniciado.': 'started.',
+        'Estado final:': 'Final status:',
+        'Artefactos:': 'Artifacts:',
+        'Cargando ejecuciones anteriores...': 'Loading previous runs...',
+        'Todavía no hay ejecuciones persistidas.': 'There are no persisted runs yet.',
+        'Preparando la grabación del servicio en segmentos temporales...': 'Preparing the service recording as temporal segments...',
+        'Grabación del servicio preparada. La validación es temporal dentro de la misma sesión.': 'Service recording prepared. Validation is temporal within the same session.',
+        'Diferencia validation/train:': 'Validation/train gap:',
+        'Sin diferencia disponible': 'No gap available',
+        'Posible sobreajuste.': 'Possible overfitting.',
+        'Mejora relativa en validation': 'Relative improvement on validation',
+        'Mejor época:': 'Best epoch:',
+        'de': 'of',
+        '40% train + 60% validation': '40% train + 60% validation',
+        'CNN1D-VAE con ventana corta: recomendado para aprender patrones locales de una grabación.': 'CNN1D-VAE with a short window: recommended for local patterns in one recording.',
+        'Ventana larga: captura contexto temporal mayor, pero necesita más memoria y puede reducir la cantidad útil de ventanas.': 'Long window: captures more temporal context, but needs more memory and may reduce useful windows.',
+        'Perfil conservador: menor capacidad y pasos más pequeños para una primera prueba estable.': 'Conservative profile: lower capacity and smaller steps for a stable first test.',
+        'CNN1D-VAE procesa patrones locales del audio.': 'CNN1D-VAE processes local audio patterns.',
+        'LSTM-VAE procesa la evolución temporal de la señal.': 'LSTM-VAE processes the temporal evolution of the signal.',
+        'Ventana solicitada:': 'Requested window:',
+        'duración compatible:': 'compatible duration:',
+        'muestras': 'samples',
+        'latente:': 'latent:',
+        'dimensiones': 'dimensions',
+        'épocas máximas:': 'maximum epochs:',
+        'Batch': 'Batch',
+        'ejemplos por actualización': 'examples per update',
+        'learning rate': 'learning rate',
+        'tamaño de paso': 'step size',
+        'beta': 'beta',
+        'regularización VAE': 'VAE regularization',
+        'evaluación cada': 'evaluation every',
+        'paciencia de parada temprana': 'early-stopping patience',
+        'evaluaciones': 'evaluations',
+        'dispositivo:': 'device:'
     });
     Object.assign(TRANSLATIONS['pt-PT'], {
-        'API': 'API', 'ready': 'pronta', 'protegido/no disponible': 'protegida/indisponível', 'grabaciones válidas': 'gravações válidas', 'grupos de adquisición': 'grupos de aquisição', 'min': 'min', 'No hay grabaciones válidas': 'Não existem gravações válidas', 'ejecuciones visibles.': 'gravações visíveis.', 'candidatas de entrenamiento.': 'candidatas a treino.', 'canales': 'canais', 'grupo': 'grupo',
-        'Fuente': 'Fonte', 'Carpeta': 'Pasta', 'Grupo de adquisición': 'Grupo de aquisição', 'Duración': 'Duração', 'Audio': 'Áudio', 'Estado': 'Estado', 'Detalle': 'Detalhes', 'No disponible': 'Não disponível',
+        'API': 'API',
+        'ready': 'pronta',
+        'protegido/no disponible': 'protegida/indisponível',
+        'grabaciones válidas': 'gravações válidas',
+        'grupos de adquisición': 'grupos de aquisição',
+        'min': 'min',
+        'No hay grabaciones válidas': 'Não existem gravações válidas',
+        'ejecuciones visibles.': 'gravações visíveis.',
+        'candidatas de entrenamiento.': 'candidatas a treino.',
+        'canales': 'canais',
+        'grupo': 'grupo',
+        'Fuente': 'Fonte',
+        'Carpeta': 'Pasta',
+        'Grupo de adquisición': 'Grupo de aquisição',
+        'Duración': 'Duração',
+        'Audio': 'Áudio',
+        'Estado': 'Estado',
+        'Detalle': 'Detalhes',
+        'No disponible': 'Não disponível',
         'Grabación local seleccionada para entrenamiento especializado. Al prepararla se dividirá temporalmente en train, validation y test.': 'Gravação local selecionada para treino especializado. Será dividida temporalmente em treino, validação e teste.',
-        'Preparando grabaciones...': 'A preparar gravações...', 'Preparación completada.': 'Preparação concluída.', 'Preparando segmentos temporales de la grabación seleccionada...': 'A preparar segmentos temporais da gravação selecionada...', 'Grabación seleccionada preparada. La validación es temporal dentro de la misma sesión.': 'Gravação selecionada preparada. A validação é temporal dentro da mesma sessão.', 'Preparando Dataset/Data...': 'A preparar Dataset/Data...', 'Dataset local preparado sin mezclarlo con la fuente del servicio.': 'Dataset local preparado sem o misturar com a fonte do serviço.',
-        'Preparar una grabación del servicio': 'Preparar uma gravação do serviço', 'Entrenamiento especializado': 'Treino especializado', 'Entrenamiento': 'Treino', 'iniciado.': 'iniciado.', 'Estado final:': 'Estado final:', 'Artefactos:': 'Artefactos:', 'Cargando ejecuciones anteriores...': 'A carregar execuções anteriores...', 'Todavía no hay ejecuciones persistidas.': 'Ainda não existem execuções persistidas.', 'Preparando la grabación del servicio en segmentos temporales...': 'A preparar a gravação do serviço em segmentos temporais...', 'Grabación del servicio preparada. La validación es temporal dentro de la misma sesión.': 'Gravação do serviço preparada. A validação é temporal dentro da mesma sessão.',
-        'Diferencia validation/train:': 'Diferença validação/treino:', 'Sin diferencia disponible': 'Sem diferença disponível', 'Posible sobreajuste.': 'Possível sobreajuste.', 'Mejora relativa en validation': 'Melhoria relativa na validação', 'Mejor época:': 'Melhor época:', 'de': 'de', '40% train + 60% validation': '40% treino + 60% validação',
-        'CNN1D-VAE con ventana corta: recomendado para aprender patrones locales de una grabación.': 'CNN1D-VAE com janela curta: recomendado para aprender padrões locais de uma gravação.', 'Ventana larga: captura contexto temporal mayor, pero necesita más memoria y puede reducir la cantidad útil de ventanas.': 'Janela longa: capta mais contexto temporal, mas necessita de mais memória e pode reduzir o número útil de janelas.', 'Perfil conservador: menor capacidad y pasos más pequeños para una primera prueba estable.': 'Perfil conservador: menor capacidade e passos menores para um primeiro teste estável.',
-        'CNN1D-VAE procesa patrones locales del audio.': 'CNN1D-VAE processa padrões locais do áudio.', 'LSTM-VAE procesa la evolución temporal de la señal.': 'LSTM-VAE processa a evolução temporal do sinal.', 'Ventana solicitada:': 'Janela solicitada:', 'duración compatible:': 'duração compatível:', 'muestras': 'amostras', 'latente:': 'latente:', 'dimensiones': 'dimensões', 'Batch': 'Batch', 'ejemplos por actualización': 'exemplos por atualização', 'learning rate': 'taxa de aprendizagem', 'tamaño de paso': 'tamanho do passo', 'beta': 'beta', 'regularización VAE': 'regularização VAE', 'evaluación cada': 'avaliação a cada', 'paciencia de parada temprana': 'paciência de paragem antecipada', 'evaluaciones': 'avaliações', 'dispositivo:': 'dispositivo:'
+        'Preparando grabaciones...': 'A preparar gravações...',
+        'Preparación completada.': 'Preparação concluída.',
+        'Preparando segmentos temporales de la grabación seleccionada...': 'A preparar segmentos temporais da gravação selecionada...',
+        'Grabación seleccionada preparada. La validación es temporal dentro de la misma sesión.': 'Gravação selecionada preparada. A validação é temporal dentro da mesma sessão.',
+        'Preparando Dataset/Data...': 'A preparar Dataset/Data...',
+        'Dataset local preparado sin mezclarlo con la fuente del servicio.': 'Dataset local preparado sem o misturar com a fonte do serviço.',
+        'Preparar una grabación del servicio': 'Preparar uma gravação do serviço',
+        'Entrenamiento especializado': 'Treino especializado',
+        'Entrenamiento': 'Treino',
+        'iniciado.': 'iniciado.',
+        'Estado final:': 'Estado final:',
+        'Artefactos:': 'Artefactos:',
+        'Cargando ejecuciones anteriores...': 'A carregar execuções anteriores...',
+        'Todavía no hay ejecuciones persistidas.': 'Ainda não existem execuções persistidas.',
+        'Preparando la grabación del servicio en segmentos temporales...': 'A preparar a gravação do serviço em segmentos temporais...',
+        'Grabación del servicio preparada. La validación es temporal dentro de la misma sesión.': 'Gravação do serviço preparada. A validação é temporal dentro da mesma sessão.',
+        'Diferencia validation/train:': 'Diferença validação/treino:',
+        'Sin diferencia disponible': 'Sem diferença disponível',
+        'Posible sobreajuste.': 'Possível sobreajuste.',
+        'Mejora relativa en validation': 'Melhoria relativa na validação',
+        'Mejor época:': 'Melhor época:',
+        'de': 'de',
+        '40% train + 60% validation': '40% treino + 60% validação',
+        'CNN1D-VAE con ventana corta: recomendado para aprender patrones locales de una grabación.': 'CNN1D-VAE com janela curta: recomendado para aprender padrões locais de uma gravação.',
+        'Ventana larga: captura contexto temporal mayor, pero necesita más memoria y puede reducir la cantidad útil de ventanas.': 'Janela longa: capta mais contexto temporal, mas necessita de mais memória e pode reduzir o número útil de janelas.',
+        'Perfil conservador: menor capacidad y pasos más pequeños para una primera prueba estable.': 'Perfil conservador: menor capacidade e passos menores para um primeiro teste estável.',
+        'CNN1D-VAE procesa patrones locales del audio.': 'CNN1D-VAE processa padrões locais do áudio.',
+        'LSTM-VAE procesa la evolución temporal de la señal.': 'LSTM-VAE processa a evolução temporal do sinal.',
+        'Ventana solicitada:': 'Janela solicitada:',
+        'duración compatible:': 'duração compatível:',
+        'muestras': 'amostras',
+        'latente:': 'latente:',
+        'dimensiones': 'dimensões',
+        'Batch': 'Batch',
+        'ejemplos por actualización': 'exemplos por atualização',
+        'learning rate': 'taxa de aprendizagem',
+        'tamaño de paso': 'tamanho do passo',
+        'beta': 'beta',
+        'regularización VAE': 'regularização VAE',
+        'evaluación cada': 'avaliação a cada',
+        'paciencia de parada temprana': 'paciência de paragem antecipada',
+        'evaluaciones': 'avaliações',
+        'dispositivo:': 'dispositivo:'
     });
 
     TRANSLATIONS.en['Todas las ventanas completas disponibles se utilizarán en cada grabación.'] = 'All available complete windows will be used for each recording.';
     TRANSLATIONS['pt-PT']['Todas las ventanas completas disponibles se utilizarán en cada grabación.'] = 'Todas as janelas completas disponíveis serão utilizadas em cada gravação.';
     let currentLanguage = localStorage.getItem('machiningAssistantLanguage') || (navigator.language.toLowerCase().startsWith('pt') ? 'pt-PT' : navigator.language.toLowerCase().startsWith('en') ? 'en' : 'es');
-    function t(source) { return TRANSLATIONS[currentLanguage]?.[source] || source; }
+
+    function t(source) {
+        return TRANSLATIONS[currentLanguage]?.[source] || source;
+    }
+
     function applyLanguage() {
         document.querySelectorAll('body *').forEach(element => {
             if (element.children.length || element.childNodes.length !== 1 || element.firstChild.nodeType !== Node.TEXT_NODE) return;
@@ -815,6 +1167,7 @@
         document.documentElement.lang = currentLanguage === 'pt-PT' ? 'pt-PT' : currentLanguage;
         if ($('languageSelector')) $('languageSelector').value = currentLanguage;
     }
+
     function setLanguage(language) {
         currentLanguage = TRANSLATIONS[language] ? language : 'es';
         localStorage.setItem('machiningAssistantLanguage', currentLanguage);
@@ -849,7 +1202,7 @@
                     audio_window_seconds: Number($('rtspTrainingWindow').value),
                     label_source: $('rtspTrainingLabels').value,
                     training_policy: $('rtspTrainingPolicy').value,
-                    min_labeled_windows: Number($('rtspMinLabeledWindows').value)
+                    min_training_seconds: Number($('rtspMinTrainingSeconds').value)
                 })
             });
             const audio = report.audio_track_detected;
@@ -877,12 +1230,12 @@
                     rtsp_password: $('rtspPassword').value,
                     transport: 'tcp',
                     training_policy: $('rtspTrainingPolicy').value,
-                    min_labeled_windows: Number($('rtspMinLabeledWindows').value)
+                    min_training_seconds: Number($('rtspMinTrainingSeconds').value)
                 })
             });
             rtspListenerId = job.listener_id;
             $('rtspStopButton').disabled = false;
-            $('rtspTrainingDetails').textContent = `Escuchando RTSP. Sesión: ${job.listener_id}\nURL: ${job.rtsp_url}\nEstado: ${job.status}\nPolítica: ${job.training_policy}\nVentanas etiquetadas requeridas: ${job.min_labeled_windows}\n\nLa contraseña no se persiste.`;
+            $('rtspTrainingDetails').textContent = `Escuchando RTSP. Sesión: ${job.listener_id}\nURL: ${job.rtsp_url}\nEstado: ${job.status}\nPolítica: ${job.training_policy}\nDuración mínima etiquetada: ${job.min_training_seconds} segundos\n\nLa contraseña no se persiste.`;
             rtspPollTimer = setInterval(() => pollRtspListener(), 1500);
             await pollRtspListener();
         } catch (e) {
@@ -897,8 +1250,15 @@
             const job = await api('/api/rtsp-training/listener/status?listener_id=' + encodeURIComponent(rtspListenerId));
             const session = job.session_metadata || {};
             const metadataStatus = job.metadata_stream_status || {};
-            $('rtspTrainingResult').innerHTML = `<div><strong>Audio</strong><span class="ok">${session.model_frames_received || 0} muestras</span></div><div><strong>Metadata</strong><span class="${metadataStatus.status === 'running' ? 'ok' : 'bad'}">${metadataStatus.status || 'iniciando'}</span></div><div><strong>Eventos</strong><span>${job.metadata_events || 0}</span></div><div><strong>Ventanas alineadas</strong><span>${job.labeled_windows || 0}/${job.min_labeled_windows || 0}</span></div>`;
-            $('rtspTrainingDetails').textContent = `Escucha RTSP: ${job.status}\nAudio: ${session.model_frames_received || 0} muestras normalizadas\nVentanas completas: ${session.emitted_windows || 0}\nMetadata: ${metadataStatus.messages_received || 0} mensajes · ${metadataStatus.packets_received || 0} paquetes RTP\nEventos metadata: ${job.metadata_events || 0}\nSnapshots metadata: ${job.metadata_snapshots || 0}\nVentanas alineadas: ${job.labeled_windows || 0}/${job.min_labeled_windows || 0}\nEntrenamiento listo: ${job.training_ready ? 'sí' : 'no'}\nContexto admitido por checkpoint: ${job.checkpoint_contract?.context_dim || 0} features\nMetadata usada por el modelo: ${session.context_used_by_model ? 'sí' : 'no'}\nDataset alineado: ${job.aligned_training_output}\n\n${job.training_note || ''}\n\n${job.log_tail || ''}`;
+            $('rtspTrainingResult').innerHTML = `<div><strong>Audio</strong><span class="ok">${session.model_frames_received || 0} muestras</span></div><div><strong>Metadata</strong><span class="${metadataStatus.status === 'running' ? 'ok' : 'bad'}">${metadataStatus.status || 'iniciando'}</span></div><div><strong>Eventos</strong><span>${job.metadata_events || 0}</span></div><div><strong>Audio etiquetado</strong><span>${Number(job.labeled_duration_seconds || 0).toFixed(1)} / ${job.min_training_seconds || 5} s</span></div>`;
+            const qualityMapping = Object.entries(job.quality_label_scores || {broken: 0, very_bad: 0.2, bad: 0.4, sufficient: 0.6, good: 0.8, excellent: 1}).map(([label, score]) => `${label}=${score}`).join(', ');
+            const dataset = job.dataset_report || {};
+            const metrics = job.training_metrics || {};
+            const validation = metrics.validation || {};
+            const test = metrics.test || {};
+            const validationSummary = validation.accuracy !== undefined ? `ACC=${validation.accuracy.toFixed(4)} F1=${(validation.macro_f1 || 0).toFixed(4)}` : 'pendientes';
+            const testSummary = test.accuracy !== undefined ? `ACC=${test.accuracy.toFixed(4)} F1=${(test.macro_f1 || 0).toFixed(4)}` : 'pendientes';
+            $('rtspTrainingDetails').textContent = `Escucha RTSP: ${job.status}\nAudio: ${session.model_frames_received || 0} muestras normalizadas\nVentanas completas: ${session.emitted_windows || 0}\nMetadata: ${metadataStatus.messages_received || 0} mensajes · ${metadataStatus.packets_received || 0} paquetes RTP\nEventos metadata: ${job.metadata_events || 0}\nSnapshots metadata: ${job.metadata_snapshots || 0}\nVentanas alineadas: ${job.labeled_windows || 0}\nAudio etiquetado: ${Number(job.labeled_duration_seconds || 0).toFixed(1)} / ${job.min_training_seconds || 5} segundos\nEtiquetas recibidas: ${(job.quality_labels || []).join(', ') || 'ninguna'}\nMapeo quality→label/score: ${qualityMapping}\nDataset multimodal: ${dataset.ready ? 'listo' : 'pendiente'} · aceptadas ${dataset.accepted_samples || 0} · rechazadas ${dataset.rejected_samples || 0}\nEntrenamiento: ${job.training_status || 'no iniciado'}\nCheckpoint de captura usa CNC: ${job.checkpoint_contract?.context_dim > 0 ? 'sí' : 'no; se entrena uno nuevo'}\nMetadata usada por el modelo de captura: ${session.context_used_by_model ? 'sí' : 'no'}\nDataset alineado: ${job.aligned_training_output}\nDataset de entrenamiento: ${dataset.dataset_dir || 'aún no generado'}\nSalida del entrenamiento: ${job.training_output || 'aún no generada'}\nCheckpoint entrenado: ${job.training_checkpoint || 'aún no generado'}\nMétricas validation: ${validationSummary}\nMétricas test: ${testSummary}\n\n${job.training_note || ''}\n\n${job.training_log_tail || job.log_tail || ''}`;
             if (['completed', 'failed', 'stopped'].includes(job.status)) {
                 clearInterval(rtspPollTimer);
                 rtspPollTimer = null;
@@ -935,7 +1295,12 @@
                 body: JSON.stringify({listener_id: rtspListenerId})
             });
             const blockers = (result.blockers || []).map(item => `• ${item}`).join('\n');
-            $('rtspTrainingDetails').textContent = `${result.status === 'blocked' ? 'Entrenamiento bloqueado' : 'Entrenamiento aceptado'}\n\n${blockers}\n\nDataset: ${result.aligned_training_output || '—'}\nContrato del checkpoint:\n${JSON.stringify(result.checkpoint_contract || {}, null, 2)}`;
+            const qualityMapping = Object.entries(result.quality_label_scores || {}).map(([label, score]) => `${label}=${score}`).join(', ');
+            const dataset = result.dataset_report || {};
+            $('rtspTrainingDetails').textContent = `${result.status === 'blocked' ? 'Entrenamiento bloqueado' : 'Entrenamiento iniciado'}\n\n${blockers}\n\nFuente de labels: ${result.label_source || '—'}\nClases esperadas: ${(result.quality_labels || []).join(', ') || '—'}\nMapeo quality→label/score: ${qualityMapping || '—'}\n\nDataset: ${dataset.dataset_dir || result.training_dataset || '—'}\nMuestras aceptadas/rechazadas: ${dataset.accepted_samples || 0}/${dataset.rejected_samples || 0}\nEstado dataset: ${dataset.ready ? 'listo' : 'pendiente'}\nTraining ID: ${result.training_id || '—'}\nSalida: ${result.training_output || '—'}\nLog: ${result.training_log || '—'}\nSolicitud registrada: ${result.training_request_output || 'session/training_request.json'}\nContrato del checkpoint de captura:\n${JSON.stringify(result.checkpoint_contract || {}, null, 2)}`;
+            if (result.accepted && rtspPollTimer === null) {
+                rtspPollTimer = setInterval(() => pollRtspListener(), 1500);
+            }
         } catch (e) {
             $('rtspTrainingDetails').textContent = `No se pudo solicitar el entrenamiento: ${e.message}`;
         }
@@ -949,7 +1314,7 @@
             label_source: $('rtspTrainingLabels').value,
             model_family: 'CNN1D-VAE',
             training_policy: $('rtspTrainingPolicy').value,
-            min_labeled_windows: Number($('rtspMinLabeledWindows').value)
+            min_training_seconds: Number($('rtspMinTrainingSeconds').value)
         };
         localStorage.setItem('cnn1dVaeRtspTrainingConfig', JSON.stringify(config));
         $('rtspTrainingDetails').textContent = 'Configuración guardada localmente en este navegador. No contiene credenciales.\n\n' + JSON.stringify(config, null, 2);
@@ -963,7 +1328,7 @@
             if (config.audio_window_seconds) $('rtspTrainingWindow').value = String(config.audio_window_seconds);
             if (config.label_source) $('rtspTrainingLabels').value = config.label_source;
             if (config.training_policy) $('rtspTrainingPolicy').value = config.training_policy;
-            if (config.min_labeled_windows) $('rtspMinLabeledWindows').value = String(config.min_labeled_windows);
+            if (config.min_training_seconds) $('rtspMinTrainingSeconds').value = String(config.min_training_seconds);
         } catch (_) {
             localStorage.removeItem('cnn1dVaeRtspTrainingConfig');
         }
@@ -972,7 +1337,7 @@
     function resetRtspTrainingConfig() {
         localStorage.removeItem('cnn1dVaeRtspTrainingConfig');
         $('rtspTrainingUrl').value = 'rtsp://127.0.0.1:8555/audio';
-        $('rtspUsername').value = '';
+        $('rtspUsername').value = 'admin';
         $('rtspPassword').value = '';
         $('rtspTrainingDetails').textContent = 'Fuente restablecida a rtsp://127.0.0.1:8555/audio. Introduce las credenciales solo para conectar.';
     }
@@ -1047,7 +1412,11 @@
         const data = await api('/api/inference/models');
         inferenceModels = data.models || [];
         $('inferenceModel').innerHTML = inferenceModels.map((item, index) => `<option value="${index}">${esc(item.training_id)} · ${esc(item.model)}</option>`).join('') || '<option value="">No hay best.pt disponibles</option>';
-        setInferenceRecordings(localRecordings.map(item => ({label: `Local · ${item.folder}`, wav_path: `${localRoot}/${item.folder}/audio_000000.wav`, recording_dir: `${localRoot}/${item.folder}`})));
+        setInferenceRecordings(localRecordings.map(item => ({
+            label: `Local · ${item.folder}`,
+            wav_path: `${localRoot}/${item.folder}/audio_000000.wav`,
+            recording_dir: `${localRoot}/${item.folder}`
+        })));
     }
 
     function selectedInferenceRecording() {
@@ -1061,7 +1430,11 @@
         $('inferenceButton').disabled = true;
         $('inferenceResult').innerHTML = '<p>Analizando la grabación sin reentrenar...</p>';
         try {
-            const job = await api('/api/inference/start', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({training_id: model.training_id, ...recording})});
+            const job = await api('/api/inference/start', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({training_id: model.training_id, ...recording})
+            });
             $('inferenceResult').innerHTML = `<p>Análisis <span class="pill">${esc(job.inference_id)}</span> iniciado.</p>`;
             const poll = async () => {
                 const status = await api('/api/inference/status?inference_id=' + encodeURIComponent(job.inference_id));
@@ -1103,7 +1476,11 @@
         }
         const e = list[0];
         const audio = e.local_recording?.audio?.[0];
-        if (audio && e.local_recording?.folder) setInferenceRecordings([{label: `Servicio · ${e.executionId}`, wav_path: `${e.local_recording.folder}/${audio.name}`, recording_dir: e.local_recording.folder}]);
+        if (audio && e.local_recording?.folder) setInferenceRecordings([{
+            label: `Servicio · ${e.executionId}`,
+            wav_path: `${e.local_recording.folder}/${audio.name}`,
+            recording_dir: e.local_recording.folder
+        }]);
         $('details').innerHTML = `<table><tr><th>Execution</th><td>${esc(e.executionId)}</td></tr><tr><th>Estado</th><td>${esc(e.state)}</td></tr><tr><th>Duración</th><td>${Number(e.durationSeconds || 0).toFixed(3)} s</td></tr><tr><th>Detalle</th><td>${esc(e.detail)}</td></tr><tr><th>Carpeta local</th><td>${esc(e.local_recording?.folder)}</td></tr><tr><th>Audio</th><td>${(e.local_recording?.audio || []).map(a => `${esc(a.name)} · ${a.sample_rate_hz} Hz · ${a.channels} ch · ${a.duration_s.toFixed(3)} s`).join('<br>') || 'No disponible'}</td></tr></table>`;
     }
 
@@ -1161,7 +1538,11 @@
             $('localRecordingDetail').textContent = 'Selecciona una grabación válida.';
             return;
         }
-        setInferenceRecordings(localRecordings.map(value => ({label: `Local · ${value.folder}`, wav_path: `${localRoot}/${value.folder}/audio_000000.wav`, recording_dir: `${localRoot}/${value.folder}`})));
+        setInferenceRecordings(localRecordings.map(value => ({
+            label: `Local · ${value.folder}`,
+            wav_path: `${localRoot}/${value.folder}/audio_000000.wav`,
+            recording_dir: `${localRoot}/${value.folder}`
+        })));
         $('localRecordingDetail').textContent = `${Number(item.duration_s).toFixed(1)} s · ${item.sample_rate_hz} Hz · ${item.channels} canales · grupo ${item.source_group} · ${item.recording_id}`;
         $('details').innerHTML = `<table><tr><th>Fuente</th><td>Dataset/Data local</td></tr><tr><th>Carpeta</th><td>${esc(item.folder)}</td></tr><tr><th>Recording ID</th><td>${esc(item.recording_id)}</td></tr><tr><th>Grupo de adquisición</th><td>${esc(item.source_group)}</td></tr><tr><th>Duración</th><td>${Number(item.duration_s).toFixed(3)} s</td></tr><tr><th>Audio</th><td>${item.sample_rate_hz} Hz · ${item.channels} canales · WAV local</td></tr></table><p class="notice">Grabación local seleccionada para entrenamiento especializado. Al prepararla se dividirá temporalmente en train, validation y test.</p>`;
         applyLanguage();
@@ -1295,7 +1676,11 @@
         try {
             const data = await api('/api/training/history?limit=50');
             const runs = data.runs || [];
-            $('learningHistory').innerHTML = runs.length ? `<table><tr><th>Fecha</th><th>Modelo</th><th>Aprendizaje</th><th>Validation</th><th>Mejor época</th></tr>${runs.map(item => { const s = item.learning || {}; const current = item.training_id === currentId ? ' class="current"' : ''; return `<tr${current}><td>${esc(item.created_at || '—')}</td><td>${esc(item.model || '—')}</td><td>${Number.isFinite(Number(s.learning_percent)) ? Number(s.learning_percent).toFixed(1) + '%' : '—'}</td><td>${Number.isFinite(Number(s.validation_improvement_percent)) ? Number(s.validation_improvement_percent).toFixed(1) + '%' : '—'}</td><td>${esc(s.best_epoch ?? '—')}</td></tr>`; }).join('')}</table>` : '<p class="muted">Todavía no hay ejecuciones persistidas.</p>';
+            $('learningHistory').innerHTML = runs.length ? `<table><tr><th>Fecha</th><th>Modelo</th><th>Aprendizaje</th><th>Validation</th><th>Mejor época</th></tr>${runs.map(item => {
+                const s = item.learning || {};
+                const current = item.training_id === currentId ? ' class="current"' : '';
+                return `<tr${current}><td>${esc(item.created_at || '—')}</td><td>${esc(item.model || '—')}</td><td>${Number.isFinite(Number(s.learning_percent)) ? Number(s.learning_percent).toFixed(1) + '%' : '—'}</td><td>${Number.isFinite(Number(s.validation_improvement_percent)) ? Number(s.validation_improvement_percent).toFixed(1) + '%' : '—'}</td><td>${esc(s.best_epoch ?? '—')}</td></tr>`;
+            }).join('')}</table>` : '<p class="muted">Todavía no hay ejecuciones persistidas.</p>';
         } catch (e) {
             $('learningHistory').innerHTML = `<p class="bad">No se pudo cargar el historial: ${esc(e.message)}</p>`;
         }
@@ -1312,7 +1697,11 @@
         const baselineReport = result.baseline_report || {};
         const stats = baselineReport.global || {};
         const calibration = baselineReport.validation_calibration || {};
-        const stateCounts = (baselineReport.window_states || []).reduce((acc, item) => { const key = item.state || 'unknown'; acc[key] = (acc[key] || 0) + 1; return acc; }, {});
+        const stateCounts = (baselineReport.window_states || []).reduce((acc, item) => {
+            const key = item.state || 'unknown';
+            acc[key] = (acc[key] || 0) + 1;
+            return acc;
+        }, {});
         $('baselineSummary').innerHTML = `<div class="card baseline-panel"><h3>Baseline estadístico de anomalías</h3><p class="muted">${esc(baselineReport.threshold_policy || 'Sin baseline disponible.')}</p><div class="grid"><div class="card span-2"><div class="muted">Media</div><div class="metric">${Number.isFinite(Number(stats.mean)) ? Number(stats.mean).toFixed(4) : '—'}</div></div><div class="card span-2"><div class="muted">Desv. estándar</div><div class="metric">${Number.isFinite(Number(stats.std)) ? Number(stats.std).toFixed(4) : '—'}</div></div><div class="card span-2"><div class="muted">P90</div><div class="metric">${Number.isFinite(Number(stats.p90)) ? Number(stats.p90).toFixed(4) : '—'}</div></div><div class="card span-2"><div class="muted">P95</div><div class="metric">${Number.isFinite(Number(stats.p95)) ? Number(stats.p95).toFixed(4) : '—'}</div></div><div class="card span-2"><div class="muted">P99</div><div class="metric">${Number.isFinite(Number(stats.p99)) ? Number(stats.p99).toFixed(4) : '—'}</div></div><div class="card span-2"><div class="muted">Calibración</div><div class="metric">${esc(calibration.status || '—')}</div></div></div><p class="muted">Estados: ${Object.entries(stateCounts).map(([key, value]) => `${esc(key)}=${value}`).join(' · ') || '—'}${calibration.metrics ? ` · F1 validación=${Number(calibration.metrics.f1).toFixed(3)}` : ''}</p></div>`;
         renderLearningProgress(result.learning_statistics);
         loadLearningHistory(result.report?.training_id || result.training_id);
@@ -1386,7 +1775,8 @@
     }
 
     function updateConfigHelp() {
-        const model = $('model').value, durationMs = Number($('windowDuration').value), epochs = Number($('epochs').value),
+        const model = $('model').value, durationMs = Number($('windowDuration').value),
+            epochs = Number($('epochs').value),
             latent = Number($('latentDim').value), device = $('device').value,
             batch = Number($('batchSize').value), lr = Number($('learningRate').value), beta = Number($('beta').value),
             evalEvery = Number($('evalEvery').value), patience = Number($('earlyStoppingPatience').value);

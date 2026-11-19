@@ -26,6 +26,9 @@ import wave
 from persistence import health as storage_health
 from persistence import persist_import, persist_training
 from persistence import training_history as storage_training_history
+from Integration.rtsp_context import playback_message_to_context
+from Integration.rtsp_training_dataset import build_rtsp_dataset
+from Integration.stream_quality import QUALITY_LABELS, QUALITY_SCORES, quality_to_label
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -100,6 +103,13 @@ def _safe_rtsp_url(value: object) -> tuple[str, str]:
     return raw, redacted
 
 
+def _rtsp_credentials(payload: dict) -> tuple[str, str]:
+    """Resolve credentials without persisting or returning the password."""
+    username = str(payload.get("rtsp_username", "") or "").strip() or setting("MACHINING_RTSP_USERNAME", "")
+    password = str(payload.get("rtsp_password", "") or "") or setting("MACHINING_RTSP_PASSWORD", "")
+    return username.strip(), password
+
+
 def validate_rtsp_training_source(payload: dict) -> dict:
     """Probe audio and metadata tracks without starting capture or training."""
     if str(payload.get("model_family", "CNN1D-VAE")) != "CNN1D-VAE":
@@ -110,8 +120,7 @@ def validate_rtsp_training_source(payload: dict) -> dict:
         raise ValueError("label_source no está permitido")
     source, redacted = _safe_rtsp_url(payload.get("rtsp_url", "rtsp://127.0.0.1:8555/audio"))
     parts = urlsplit(source)
-    username = str(payload.get("rtsp_username", "") or "").strip()
-    password = str(payload.get("rtsp_password", "") or "")
+    username, password = _rtsp_credentials(payload)
     if username or password:
         if not username or not password:
             raise ValueError("rtsp_username y rtsp_password deben recibirse juntos")
@@ -174,9 +183,17 @@ def _redact_rtsp_text(value: str, source: str, redacted: str) -> str:
 
 def start_rtsp_listener(payload: dict) -> dict:
     """Start the existing audio RTSP receiver as a web-controlled session."""
+    with _rtsp_listener_lock:
+        for active in _rtsp_listener_jobs.values():
+            audio_process = active.get("process")
+            metadata_process = active.get("metadata_process")
+            if ((audio_process is not None and audio_process.poll() is None)
+                    or (metadata_process is not None and metadata_process.poll() is None)):
+                raise RuntimeError(
+                    f"Ya existe una escucha RTSP activa ({active.get('listener_id')}); deténgala antes de iniciar otra"
+                )
     source, redacted = _safe_rtsp_url(payload.get("rtsp_url", "rtsp://127.0.0.1:8555/audio"))
-    username = str(payload.get("rtsp_username", "") or "").strip()
-    password = str(payload.get("rtsp_password", "") or "")
+    username, password = _rtsp_credentials(payload)
     if username or password:
         if not username or not password:
             raise ValueError("rtsp_username y rtsp_password deben recibirse juntos")
@@ -188,9 +205,10 @@ def start_rtsp_listener(payload: dict) -> dict:
     training_policy = str(payload.get("training_policy", "continuous_capture_then_batch"))
     if training_policy not in {"continuous_capture_then_batch", "capture_only"}:
         raise ValueError("training_policy no está permitido")
-    min_labeled_windows = int(payload.get("min_labeled_windows", 32))
-    if not 1 <= min_labeled_windows <= 100000:
-        raise ValueError("min_labeled_windows debe estar entre 1 y 100000")
+    legacy_windows = payload.get("min_labeled_windows")
+    min_training_seconds = int(payload.get("min_training_seconds", (int(legacy_windows) * 5 if legacy_windows is not None else 5)))
+    if not 5 <= min_training_seconds <= 600:
+        raise ValueError("min_training_seconds debe estar entre 5 segundos y 600 segundos")
     checkpoint = Path(setting("MACHINING_CHECKPOINT", "")).expanduser().resolve()
     if not checkpoint.is_file():
         raise FileNotFoundError("MACHINING_CHECKPOINT no está configurado o no existe")
@@ -205,6 +223,7 @@ def start_rtsp_listener(payload: dict) -> dict:
     metadata_output = root / "session.metadata.json"
     metadata_status_output = root / "metadata.status.json"
     aligned_output = root / "aligned_training.jsonl"
+    audio_windows_output = root / "audio_windows"
     log_path = root / "listener.log"
     metadata_log_path = root / "metadata.listener.log"
     env = os.environ.copy()
@@ -216,6 +235,7 @@ def start_rtsp_listener(payload: dict) -> dict:
         "MACHINING_RTSP_OUTPUT": str(output),
         "MACHINING_RTSP_METADATA_OUTPUT": str(metadata_output),
         "MACHINING_RTSP_CONTEXT_STREAM": str(root / "stream_metadata.jsonl"),
+        "MACHINING_RTSP_AUDIO_WINDOWS_OUTPUT": str(audio_windows_output),
         "MACHINING_METADATA_RTSP_URL": source,
         "MACHINING_METADATA_OUTPUT": str(root / "stream_metadata.jsonl"),
         "MACHINING_METADATA_STATUS_OUTPUT": str(metadata_status_output),
@@ -238,13 +258,16 @@ def start_rtsp_listener(payload: dict) -> dict:
     job = {
         "listener_id": session_id, "status": "starting", "pid": process.pid,
         "rtsp_url": redacted, "transport": transport, "model_family": "CNN1D-VAE",
-        "training_policy": training_policy, "min_labeled_windows": min_labeled_windows,
+        "training_policy": training_policy, "min_training_seconds": min_training_seconds,
+        "minimum_labeled_windows": (min_training_seconds + 4) // 5,
         "training_ready": False, "labeled_windows": 0,
         "checkpoint_contract": checkpoint_contract,
         "output": str(output), "metadata_output": str(metadata_output), "log": str(log_path),
         "metadata_stream_output": str(root / "stream_metadata.jsonl"),
         "metadata_status_output": str(metadata_status_output), "metadata_log": str(metadata_log_path),
-        "aligned_training_output": str(aligned_output), "started_at": time.time(),
+        "aligned_training_output": str(aligned_output),
+        "audio_windows_output": str(audio_windows_output),
+        "training_request_output": str(root / "training_request.json"), "started_at": time.time(),
         "process": process, "metadata_process": metadata_process,
     }
     with _rtsp_listener_lock:
@@ -282,8 +305,22 @@ def _align_rtsp_training_windows(job: dict) -> dict:
     """Align event labels with completed audio windows without using predictions as labels."""
     predictions = _read_json_lines(Path(str(job.get("output", ""))))
     messages = _read_json_lines(Path(str(job.get("metadata_stream_output", ""))))
+    session_metadata = _read_json_file(Path(str(job.get("metadata_output", ""))), {})
+    occurred_at_utc = session_metadata.get("started_at_utc") if isinstance(session_metadata, dict) else None
     snapshots = [item for item in messages if item.get("type") == "snapshot"]
-    events = [item for item in messages if item.get("type") == "event"]
+    raw_events = [item for item in messages if item.get("type") == "event"]
+    events = []
+    seen_events = set()
+    for item in raw_events:
+        event = item.get("event") if isinstance(item.get("event"), dict) else {}
+        event_id = event.get("id") or (
+            item.get("recordingId"), item.get("timestampSeconds"),
+            event.get("occurrence"), event.get("value"),
+        )
+        if event_id in seen_events:
+            continue
+        seen_events.add(event_id)
+        events.append(item)
     aligned = []
     for prediction in predictions:
         try:
@@ -299,23 +336,41 @@ def _align_rtsp_training_windows(job: dict) -> dict:
                 continue
             if start <= timestamp < end:
                 event = item.get("event") if isinstance(item.get("event"), dict) else {}
-                occurrence = event.get("occurrence") or event.get("type") or "event"
-                window_events.append({"timestamp_seconds": timestamp, "label": str(occurrence), "event": event})
+                try:
+                    label, quality_score = quality_to_label(event.get("quality"))
+                except (TypeError, ValueError):
+                    continue
+                window_events.append({
+                    "timestamp_seconds": timestamp, "label": label,
+                    "quality_score": quality_score, "occurrence": event.get("occurrence"),
+                    "event": event,
+                })
         if not window_events:
             continue
         previous = [
             item for item in snapshots
             if isinstance(item.get("timestampSeconds"), (int, float)) and item["timestampSeconds"] <= start
         ]
-        context = previous[-1].get("context") if previous else None
+        raw_snapshot = previous[-1] if previous else None
+        context = None
+        context_error = None
+        if raw_snapshot is not None:
+            try:
+                context = playback_message_to_context(raw_snapshot, occurred_at_utc)
+            except (TypeError, ValueError) as exc:
+                context_error = str(exc)
         aligned.append({
             "window_start_seconds": start, "window_end_seconds": end,
             "audio_prediction": {
                 "predicted_label": prediction.get("predicted_label"),
                 "confidence_uncalibrated": prediction.get("confidence_uncalibrated"),
             },
-            "label_source": "x-machining-metadata.event",
-            "label": window_events[0]["label"], "events": window_events, "context": context,
+            "label_source": "x-machining-metadata.event.quality",
+            "label": window_events[0]["label"],
+            "quality_score": window_events[0]["quality_score"],
+            "audio_wav_file": prediction.get("audio_window_file"),
+            "events": window_events, "context": context,
+            "context_error": context_error,
         })
     aligned_path = Path(str(job.get("aligned_training_output", "")))
     if aligned_path:
@@ -323,12 +378,19 @@ def _align_rtsp_training_windows(job: dict) -> dict:
         temporary = aligned_path.with_name(aligned_path.name + ".tmp")
         temporary.write_text("".join(json.dumps(item, ensure_ascii=False) + "\n" for item in aligned), encoding="utf-8")
         temporary.replace(aligned_path)
+    labeled_duration_seconds = sum(
+        max(0.0, float(item["window_end_seconds"]) - float(item["window_start_seconds"]))
+        for item in aligned
+    )
     job["labeled_windows"] = len(aligned)
-    job["training_ready"] = len(aligned) >= int(job.get("min_labeled_windows", 32))
+    job["labeled_duration_seconds"] = round(labeled_duration_seconds, 3)
+    job["training_ready"] = labeled_duration_seconds >= float(job.get("min_training_seconds", 5))
     job["metadata_messages"] = len(messages)
     job["metadata_events"] = len(events)
+    job["quality_labels"] = sorted({item["label"] for item in aligned})
+    job["quality_label_scores"] = dict(QUALITY_SCORES)
     job["metadata_snapshots"] = len(snapshots)
-    return {"labeled_windows": len(aligned), "training_ready": job["training_ready"], "metadata_messages": len(messages), "metadata_events": len(events), "metadata_snapshots": len(snapshots)}
+    return {"labeled_windows": len(aligned), "labeled_duration_seconds": job["labeled_duration_seconds"], "training_ready": job["training_ready"], "metadata_messages": len(messages), "metadata_events": len(events), "metadata_snapshots": len(snapshots), "quality_labels": job["quality_labels"]}
 
 
 def _rtsp_listener_public(job: dict) -> dict:
@@ -343,18 +405,46 @@ def _rtsp_listener_public(job: dict) -> dict:
         metadata_return_code = metadata_process.poll()
         job["metadata_status"] = "running" if metadata_return_code is None else ("completed" if metadata_return_code == 0 else "failed")
         job["metadata_return_code"] = metadata_return_code
+    training_process = job.get("training_process")
+    if training_process is not None:
+        training_return_code = training_process.poll()
+        if training_return_code is None:
+            job["training_status"] = "running"
+        else:
+            job["training_status"] = "completed" if training_return_code == 0 else "failed"
+            job["training_return_code"] = training_return_code
+            training_output = Path(str(job.get("training_output", "")))
+            job["training_checkpoint"] = str(training_output / "best.pt") if (training_output / "best.pt").is_file() else None
+            request_path = Path(str(job.get("training_request_output", "")))
+            if request_path.is_file():
+                request = _read_json_file(request_path, {})
+                if isinstance(request, dict) and request.get("status") == "running":
+                    request["status"] = job["training_status"]
+                    request["accepted"] = training_return_code == 0
+                    request["training_return_code"] = training_return_code
+                    request["training_checkpoint"] = job["training_checkpoint"]
+                    request_path.write_bytes(json_bytes(request))
     _align_rtsp_training_windows(job)
-    result = {key: value for key, value in job.items() if key not in {"process", "metadata_process"}}
+    result = {key: value for key, value in job.items() if key not in {"process", "metadata_process", "training_process"}}
     metadata_path = Path(str(job.get("metadata_output", "")))
     result["session_metadata"] = _read_json_file(metadata_path, {}) if metadata_path.is_file() else None
     result["metadata_stream_status"] = _read_json_file(Path(str(job.get("metadata_status_output", ""))), {})
     result["training_note"] = (
-        "El dataset alineado alcanzó el mínimo configurado y puede pasar a la siguiente fase de entrenamiento."
+        "El dataset multimodal está listo y el entrenamiento fue solicitado."
+        if job.get("training_status") in {"starting", "running", "completed"} else
+        "El dataset alineado alcanzó la duración mínima; todavía debe validar clases y contextos CNC."
         if job.get("training_ready") else
         "Pendiente de alcanzar el mínimo de ventanas con eventos x-machining-metadata; las predicciones no se usan como labels."
     )
     log_path = Path(str(job.get("log", "")))
     result["log_tail"] = log_path.read_text(encoding="utf-8", errors="replace")[-12000:] if log_path.is_file() else ""
+    training_log = Path(str(job.get("training_log", "")))
+    result["training_log_tail"] = training_log.read_text(encoding="utf-8", errors="replace")[-12000:] if training_log.is_file() else ""
+    dataset_report = Path(str(job.get("dataset_report", "")))
+    result["dataset_report"] = _read_json_file(dataset_report, {}) if dataset_report.is_file() else None
+    training_output = Path(str(job.get("training_output", "")))
+    result["training_metrics"] = _read_json_file(training_output / "metrics.json", {}) if training_output.is_dir() else None
+    result["training_checkpoint"] = job.get("training_checkpoint")
     return result
 
 
@@ -387,25 +477,79 @@ def stop_rtsp_listener(listener_id: str) -> dict:
 
 def request_rtsp_training(payload: dict) -> dict:
     listener_id = str(payload.get("listener_id", ""))
-    job = rtsp_listener_status(listener_id)
+    rtsp_listener_status(listener_id)
+    with _rtsp_listener_lock:
+        job = _rtsp_listener_jobs.get(listener_id)
+        if job is None:
+            raise FileNotFoundError("No existe la sesión RTSP solicitada")
     blockers = []
-    if job.get("status") not in {"running", "starting"}:
-        blockers.append("La escucha RTSP no está activa")
     if int(job.get("metadata_events", 0)) == 0:
         blockers.append("No se han recibido eventos x-machining-metadata")
-    if int(job.get("labeled_windows", 0)) < int(job.get("min_labeled_windows", 32)):
-        blockers.append("No se alcanzó el mínimo de ventanas alineadas")
-    contract = job.get("checkpoint_contract", {})
-    if int(contract.get("context_dim", 0)) == 0:
-        blockers.append("El checkpoint activo es audio-only (context_dim=0)")
+    if float(job.get("labeled_duration_seconds", 0)) < float(job.get("min_training_seconds", 5)):
+        blockers.append("No se alcanzó la duración mínima de audio etiquetado")
     if not job.get("training_ready"):
         blockers.append("El dataset alineado todavía no está listo")
-    if blockers:
-        return {"accepted": False, "status": "blocked", "listener_id": listener_id, "blockers": blockers,
-                "aligned_training_output": job.get("aligned_training_output"), "checkpoint_contract": contract}
-    return {"accepted": False, "status": "blocked", "listener_id": listener_id,
-            "blockers": ["La ejecución automática del entrenador requiere un dataset multimodal con labels compatibles con labels.json"],
-            "aligned_training_output": job.get("aligned_training_output"), "checkpoint_contract": contract}
+    session_dir = Path(str(job.get("aligned_training_output", ""))).parent
+    dataset_dir = session_dir / "training_dataset"
+    dataset_report = build_rtsp_dataset(
+        session_dir=session_dir,
+        aligned_path=Path(str(job.get("aligned_training_output", ""))),
+        output_dir=dataset_dir,
+    )
+    job["dataset_report"] = str(dataset_dir / "dataset_report.json")
+    if not dataset_report.get("ready"):
+        blockers.append("El dataset no tiene las seis clases con contextos CNC válidos y splits train/val/test")
+    contract = job.get("checkpoint_contract", {})
+    report = {"accepted": False, "status": "blocked", "listener_id": listener_id,
+              "requested_at": time.time(), "blockers": blockers,
+              "labeled_windows": job.get("labeled_windows", 0),
+              "labeled_duration_seconds": job.get("labeled_duration_seconds", 0),
+              "aligned_training_output": job.get("aligned_training_output"),
+              "training_request_output": job.get("training_request_output"),
+              "checkpoint_contract": contract,
+              "capture_checkpoint_is_only_for_capture": True,
+              "dataset_report": dataset_report,
+              "training_dataset": str(dataset_dir),
+              "quality_labels": list(QUALITY_LABELS),
+              "quality_label_scores": dict(QUALITY_SCORES),
+              "label_source": "x-machining-metadata.event.quality"}
+    if not blockers:
+        existing = job.get("training_process")
+        if existing is not None and existing.poll() is None:
+            report.update({"accepted": True, "status": "running", "training_id": job.get("training_id"),
+                           "training_output": job.get("training_output"), "training_log": job.get("training_log")})
+        else:
+            epochs = int(payload.get("epochs", 20))
+            if not 1 <= epochs <= 1000:
+                raise ValueError("epochs debe estar entre 1 y 1000")
+            device = str(payload.get("device", "auto"))
+            if device not in {"auto", "cpu", "cuda"}:
+                raise ValueError("device no está permitido")
+            training_output = session_dir / "training_run"
+            training_log = session_dir / "training.log"
+            command = [str(PYTHON), str(PROJECT_ROOT / "CNN1D-VAE" / "train_fourclass.py"),
+                       "--data-dir", str(dataset_dir), "--csv", str(dataset_dir / "samples.csv"),
+                       "--cnc-context", str(dataset_dir / "contexts.json"),
+                       "--output-dir", str(training_output), "--epochs", str(epochs),
+                       "--device", device]
+            log_handle = training_log.open("w", encoding="utf-8")
+            try:
+                training_process = subprocess.Popen(command, cwd=PROJECT_ROOT, env=os.environ.copy(),
+                                                    stdout=log_handle, stderr=subprocess.STDOUT, text=True)
+            finally:
+                log_handle.close()
+            job.update({"training_id": f"{listener_id}_rtsp_cnn", "training_status": "running",
+                        "training_process": training_process, "training_output": str(training_output),
+                        "training_log": str(training_log)})
+            report.update({"accepted": True, "status": "running", "training_id": job["training_id"],
+                           "training_output": str(training_output), "training_log": str(training_log),
+                           "command": command})
+    if report["accepted"] is False and not report["blockers"]:
+        report["blockers"] = ["No se pudo iniciar el entrenamiento"]
+    request_path = Path(str(job.get("training_request_output", "")))
+    if request_path:
+        request_path.write_bytes(json_bytes(report))
+    return report
 
 
 def json_bytes(value: object) -> bytes:

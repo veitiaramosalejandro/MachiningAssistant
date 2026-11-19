@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 from urllib.parse import urlsplit, urlunsplit
+import wave
 
 import numpy as np
 
@@ -149,6 +150,7 @@ def _write_metadata(path: Path, metadata: dict) -> None:
 def run_stream(*, model: str, checkpoint: Path, url: str, ffmpeg: str,
                ffprobe: str, transport: str, source_sample_rate: int, chunk_ms: float,
                output: Path, metadata_output: Path, device: str, threads: int,
+               audio_windows_output: Path | None = None,
                context_stream: Path | None = None) -> dict:
     if chunk_ms <= 0:
         raise ValueError("MACHINING_RTSP_CHUNK_MS must be positive")
@@ -186,6 +188,8 @@ def run_stream(*, model: str, checkpoint: Path, url: str, ffmpeg: str,
         "processed_frames": 0,
         "emitted_windows": 0,
         "trailing_frames": 0,
+        "audio_windows_output": str(audio_windows_output) if audio_windows_output else None,
+        "audio_windows_saved": 0,
         "ffmpeg_return_code": None,
         "error": None,
     }
@@ -206,6 +210,22 @@ def run_stream(*, model: str, checkpoint: Path, url: str, ffmpeg: str,
     metadata["context_used_by_model"] = bool(metadata_timeline)
     _write_metadata(metadata_output, metadata)
     output.parent.mkdir(parents=True, exist_ok=True)
+    if audio_windows_output is not None:
+        audio_windows_output.mkdir(parents=True, exist_ok=True)
+
+    def save_audio_window(window: np.ndarray, sequence_number: int, start_s: float, end_s: float):
+        if audio_windows_output is None:
+            return None
+        path = audio_windows_output / f"window_{sequence_number:06d}_{start_s:.3f}_{end_s:.3f}.wav"
+        counts = np.clip(np.rint(window), -32768, 32767).astype("<i2", copy=False)
+        with wave.open(str(path), "wb") as writer:
+            writer.setnchannels(CHANNELS)
+            writer.setsampwidth(2)
+            writer.setframerate(SAMPLE_RATE)
+            writer.writeframes(counts.tobytes())
+        metadata["audio_windows_saved"] += 1
+        return path
+
     command = _ffmpeg_command(ffmpeg, url, transport)
     started = time.perf_counter()
     emitted = 0
@@ -230,7 +250,8 @@ def run_stream(*, model: str, checkpoint: Path, url: str, ffmpeg: str,
                 metadata["source_frames_received"] += len(pcm)
                 metadata["model_frames_received"] = stream.input_frames + len(pcm)
                 provider = None if metadata_timeline is None else metadata_timeline.context_at
-                for result in stream.push(pcm, sample_rate=SAMPLE_RATE, context_provider=provider):
+                for result in stream.push(pcm, sample_rate=SAMPLE_RATE, context_provider=provider,
+                                         window_callback=save_audio_window):
                     metadata["processed_frames"] = stream.processed_frames
                     metadata["emitted_windows"] = stream.emitted_windows
                     metadata["trailing_frames"] = stream.pending_frames
@@ -313,6 +334,9 @@ def main(argv=None) -> int:
     parser.add_argument("--output", type=Path, default=Path(_env(env, "MACHINING_RTSP_OUTPUT", "runs/rtsp/live_predictions.jsonl")))
     parser.add_argument("--metadata-output", type=Path,
                         default=Path(_env(env, "MACHINING_RTSP_METADATA_OUTPUT", "runs/rtsp/live_predictions.metadata.json")))
+    audio_windows_value = _env(env, "MACHINING_RTSP_AUDIO_WINDOWS_OUTPUT", "")
+    parser.add_argument("--audio-windows-output", type=Path,
+                        default=Path(audio_windows_value) if audio_windows_value else None)
     context_stream_value = _env(env, "MACHINING_RTSP_CONTEXT_STREAM", "")
     parser.add_argument("--context-stream", type=Path, default=Path(context_stream_value) if context_stream_value else None)
     parser.add_argument("--model", choices=("cnn", "lstm"), default=_env(env, "MACHINING_MODEL", "cnn"))
@@ -333,6 +357,8 @@ def main(argv=None) -> int:
                             output=args.output.expanduser().resolve(),
                             metadata_output=args.metadata_output.expanduser().resolve(),
                             device=args.device, threads=args.threads,
+                            audio_windows_output=args.audio_windows_output.expanduser().resolve()
+                            if args.audio_windows_output else None,
                             context_stream=args.context_stream.expanduser().resolve() if args.context_stream else None)
     except (OSError, RuntimeError, ValueError, FileNotFoundError) as exc:
         parser.error(str(exc))

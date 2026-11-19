@@ -60,7 +60,7 @@ class StreamingClassifier:
             remaining -= count
         self.pending_frames -= self.valid_frames
 
-    def push(self, pcm, sample_rate=None, context_provider=None):
+    def push(self, pcm, sample_rate=None, context_provider=None, window_callback=None):
         if self._finished:
             raise RuntimeError('Session is finished; call reset() or create a new session before another recording')
         if sample_rate is not None and sample_rate != self.sample_rate:
@@ -81,15 +81,23 @@ class StreamingClassifier:
             window = self._next_window()
             start = self.processed_frames
             end = start+self.valid_frames
+            window_artifact = None
+            if window_callback is not None:
+                window_artifact = window_callback(
+                    window, self.emitted_windows, start / self.sample_rate, end / self.sample_rate
+                )
             context = None if context_provider is None else context_provider(
                 start / self.sample_rate, end / self.sample_rate
             )
             prediction = self.predictor.predict_pcm(
                 window, sample_rate=self.sample_rate, context=context
             )
-            results.append({**prediction, 'sequence_number': self.emitted_windows,
-                            'start_frame': start, 'end_frame': end,
-                            'start_s': start/self.sample_rate, 'end_s': end/self.sample_rate})
+            result = {**prediction, 'sequence_number': self.emitted_windows,
+                      'start_frame': start, 'end_frame': end,
+                      'start_s': start/self.sample_rate, 'end_s': end/self.sample_rate}
+            if window_artifact is not None:
+                result['audio_window_file'] = str(window_artifact)
+            results.append(result)
             # Commit consumption after successful inference; no input is lost
             # merely because a caller catches an inference exception.
             self._consume_window()
