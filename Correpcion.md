@@ -1,163 +1,171 @@
-La solución real no es quitar el bloqueo: hay que generar un checkpoint nuevo cuyo contrato coincida con los datos del stream. Voy a revisar el modelo, el entrenador y el formato actual de `aligned_training.jsonl` para precisar qué falta y evitar proponer un cambio incompatible.
+# Corrección completa del entrenamiento RTSP multimodal
 
-## Problema real
+## Estado
 
-El problema no está en el RTSP ni en la metadata. El problema es que actualmente hay dos contratos diferentes:
+La corrección está implementada en el repositorio, pero el entrenamiento real
+solo puede completarse cuando el stream proporcione suficientes ventanas con
+las seis clases de calidad y con todos los campos CNC requeridos.
 
-### Datos recibidos del stream
+La solución no modifica artificialmente el checkpoint antiguo. Genera un nuevo
+dataset y un nuevo checkpoint CNN1D-VAE multimodal.
+
+## Problema corregido
+
+El checkpoint histórico tiene este contrato:
 
 ```text
-Entrada:
-- Audio PCM
-- Contexto CNC
-
-Labels esperados:
-broken
-very_bad
-bad
-sufficient
-good
-excellent
+Entrada: audio estéreo solamente
+context_dim: 0
+Clases: good, sufficient, bad, very_bad
 ```
 
-### Checkpoint actual
+Ese checkpoint no puede aceptar contexto CNC ni las nuevas etiquetas de
+calidad. El stream necesita otro contrato:
 
 ```text
-Entrada:
-- Solo audio
-- context_dim = 0
+Entradas:
+- audio PCM estéreo en ventanas completas de 5 segundos;
+- contexto CNC validado y normalizado.
 
 Labels:
-good
-sufficient
-bad
-very_bad
+- quality 0 -> broken -> score 0.0;
+- quality 1 -> very_bad -> score 0.2;
+- quality 2 -> bad -> score 0.4;
+- quality 3 -> sufficient -> score 0.6;
+- quality 4 -> good -> score 0.8;
+- quality 5 -> excellent -> score 1.0.
 ```
 
-Por eso no se debe modificar simplemente `training_request.json` para quitar el bloqueo. El checkpoint actual fue entrenado con otra arquitectura lógica, otra cantidad de clases y sin CNC.
+Las predicciones del checkpoint histórico nunca se usan como labels.
 
-Además, su metadata indica que las clases actuales son sintéticas:
-
-```text
-good, sufficient, bad, very_bad
-```
-
-No representan todavía calidad real de mecanizado.
-
-## Solución correcta
-
-Hay que crear un nuevo dataset multimodal y entrenar un nuevo checkpoint CNN1D-VAE.
-
-El repositorio ya tiene parte de la capacidad necesaria:
-
-- [`CNN1D-VAE/classifier.py`](D:/proyecto/source/repos/MachiningAssistant/CNN1D-VAE/classifier.py) acepta `context_dim > 0`.
-- [`fourclass_training.py`](D:/proyecto/source/repos/MachiningAssistant/fourclass_training.py) acepta `--cnc-context`.
-- [`cnc_features.py`](D:/proyecto/source/repos/MachiningAssistant/Dataset/Preprocessing/cnc_features.py) convierte el contexto CNC a un vector numérico.
-- [`fourclass_prediction.py`](D:/proyecto/source/repos/MachiningAssistant/fourclass_prediction.py) ya sabe inferir con audio + CNC.
-
-Lo que falta es conectar correctamente el stream con el entrenador.
-
-## Flujo que debe implementarse
+## Flujo implementado
 
 ```text
 RTSP
- ├── Audio
- │    └── Ventana WAV de 5 segundos
- │
- └── x-machining-metadata
-      ├── Contexto CNC
-             │
-             ▼
-      Alineación temporal
-             │
-             ▼
-      Dataset multimodal
-      ├── audio/*.wav
-      ├── samples.csv
-      ├── labels.json
-      └── contexts.json
-             │
-             ▼
-      Entrenamiento CNN1D-VAE
-             │
-             ▼
-      Nuevo best.pt
+├── pista de audio
+│   └── FFmpeg -> PCM16LE 44100 Hz estéreo
+│       └── ventanas completas de 220500 frames
+│           └── audio_windows/window_*.wav
+│
+└── pista x-machining-metadata
+    ├── snapshots de contexto CNC
+    └── eventos con quality 0..5
+        │
+        ▼
+    alineación temporal audio + metadata
+        │
+        ▼
+    dataset multimodal validado
+        ├── audio/*.wav
+        ├── labels.json
+        ├── samples.csv
+        ├── contexts.json
+        └── dataset_report.json
+        │
+        ▼
+    CNN1D-VAE con audio + contexto CNC
+        │
+        ▼
+    best.pt, metrics.json, history.json y test_predictions.csv
 ```
 
-## Qué debe contener el nuevo dataset
+## Componentes implementados
 
-### `labels.json`
+### Captura de audio
 
-```json
-{
-  "0": "broken",
-  "1": "very_bad",
-  "2": "bad",
-  "3": "sufficient",
-  "4": "good",
-  "5": "excellent"
-}
+[`Integration/rtsp_stream_service.py`](D:/proyecto/source/repos/MachiningAssistant/Integration/rtsp_stream_service.py)
+guarda cada ventana completa como WAV cuando recibe
+`MACHINING_RTSP_AUDIO_WINDOWS_OUTPUT`.
+
+[`classification_streaming.py`](D:/proyecto/source/repos/MachiningAssistant/classification_streaming.py)
+expone `window_callback` para capturar la ventana sin alterar la clasificación
+ni mezclar ventanas incompletas.
+
+### Labels
+
+[`Integration/stream_quality.py`](D:/proyecto/source/repos/MachiningAssistant/Integration/stream_quality.py)
+contiene el contrato único de clases y puntuaciones.
+
+La alineación en [`web_monitor.py`](D:/proyecto/source/repos/MachiningAssistant/web_monitor.py)
+usa únicamente:
+
+```text
+x-machining-metadata.event.quality
 ```
 
-### `samples.csv`
+Un evento sin `quality` entero entre 0 y 5 se rechaza como label. No se
+convierte una confianza softmax en una etiqueta.
 
-Cada ventana debe tener una fila similar a:
+### Contexto CNC
 
-```csv
-sample_id,split,wav_file,label,label_index,frame_count
-stream_000001,train,audio/stream_000001.wav,broken,0,220500
+Los snapshots se convierten al contrato canónico mediante
+[`Integration/rtsp_context.py`](D:/proyecto/source/repos/MachiningAssistant/Integration/rtsp_context.py).
+
+Después se validan con
+[`Dataset/Preprocessing/cnc_features.py`](D:/proyecto/source/repos/MachiningAssistant/Dataset/Preprocessing/cnc_features.py).
+
+Las siete características numéricas actuales son:
+
+```text
+ActualSpindleRpm
+ActualFeedMmPerMin
+SPowerPercent
+WPowerPercent
+ToolDiameterMm
+ToolTeethCount
+ToolRemainingUsePercent
 ```
 
-El `label_index` es el valor que realmente recibe `CrossEntropyLoss`.
+Si falta una característica obligatoria, la muestra se rechaza. No se
+rellenan campos faltantes con cero ni con valores inventados.
 
-### `contexts.json`
+### Construcción del dataset
 
-Cada muestra debe tener su contexto CNC asociado:
+[`Integration/rtsp_training_dataset.py`](D:/proyecto/source/repos/MachiningAssistant/Integration/rtsp_training_dataset.py)
+materializa el dataset asociado a una sesión:
 
-```json
-[
-  {
-    "sample_id": "stream_000001",
-    "context": {
-      "SchemaVersion": 1,
-      "ContextId": "...",
-      "MachineId": "...",
-      "DriverSessionId": "...",
-      "OccurredAtUtc": "...",
-      "ActualSpindleRpm": 2546,
-      "ActualFeedMmPerMin": 4962,
-      "SPowerPercent": 40,
-      "WPowerPercent": 30,
-      "ToolDiameterMm": 25,
-      "ToolTeethCount": 4,
-      "ToolRemainingUsePercent": 80
-    }
-  }
-]
+```text
+runs/rtsp/web_sessions/<session_id>/training_dataset/
+├── audio/
+├── labels.json
+├── samples.csv
+├── contexts.json
+└── dataset_report.json
 ```
 
-El modelo no recibe directamente el JSON completo. Recibe el vector numérico normalizado definido por `FEATURE_NAMES` en [`cnc_features.py`](D:/proyecto/source/repos/MachiningAssistant/Dataset/Preprocessing/cnc_features.py:80).
+Cada muestra debe tener WAV existente, label de `quality` válido, contexto CNC
+válido, `sample_id` único y `label_index` consistente con `labels.json`.
 
-## Entrenamiento del nuevo modelo
+El dataset se considera listo únicamente si cada una de las seis clases tiene
+al menos tres muestras: una para `val`, una para `test` y al menos una para
+`train`. Esta regla es un mínimo operativo; más muestras por clase son
+necesarias para evaluar generalización de forma fiable.
 
-El entrenamiento debe ejecutarse como una nueva corrida, no como continuación del checkpoint actual:
+### Entrenamiento
+
+El botón de la interfaz llama a `/api/rtsp-training/train`.
+
+Cuando el dataset está listo, el monitor ejecuta internamente:
 
 ```powershell
-.\.venv\Scripts\python.exe fourclass_training.py `
-  --data-dir runs\rtsp\datasets\<dataset_id> `
-  --csv runs\rtsp\datasets\<dataset_id>\samples.csv `
-  --cnc-context runs\rtsp\datasets\<dataset_id>\contexts.json `
-  --output-dir runs\train\rtsp_multimodal\<run_id> `
+.\.venv\Scripts\python.exe CNN1D-VAE\train_fourclass.py `
+  --data-dir runs\rtsp\web_sessions\<session_id>\training_dataset `
+  --csv runs\rtsp\web_sessions\<session_id>\training_dataset\samples.csv `
+  --cnc-context runs\rtsp\web_sessions\<session_id>\training_dataset\contexts.json `
+  --output-dir runs\rtsp\web_sessions\<session_id>\training_run `
   --epochs 20 `
-  --device cpu
+  --device auto
 ```
 
-El nuevo checkpoint debe guardar:
+El entrenamiento es una corrida nueva. No se permite continuar el checkpoint
+audio-only porque cambiarían las clases y la arquitectura de entrada.
+
+El nuevo checkpoint debe contener, como mínimo:
 
 ```json
 {
-  "model_family": "CNN1D-VAE",
   "task": "classification",
+  "model_family": "CNN1D-VAE",
   "context_dim": 7,
   "class_names": [
     "broken",
@@ -170,66 +178,88 @@ El nuevo checkpoint debe guardar:
 }
 ```
 
-El valor exacto de `context_dim` debe coincidir con la cantidad de características definidas en `FEATURE_NAMES`.
+El checkpoint conserva además el normalizador CNC calculado únicamente con
+las muestras de entrenamiento.
 
-## Por qué no basta con los 10 segundos actuales
+### Resultado visible
 
-Los 10 segundos actuales representan solamente dos ventanas etiquetadas:
+La interfaz muestra audio recibido, mensajes, snapshots y eventos metadata,
+ventanas alineadas, muestras aceptadas y rechazadas, motivos de rechazo,
+estado del dataset, estado del entrenamiento, log del entrenador, `best.pt` y
+métricas de validation y test.
+
+Los artefactos principales son:
 
 ```text
-30–35 segundos → broken
-65–70 segundos → broken
+aligned_training.jsonl
+training_dataset/dataset_report.json
+training_request.json
+training.log
+training_run/best.pt
+training_run/metrics.json
+training_run/history.json
+training_run/test_predictions.csv
 ```
 
-Eso no permite entrenar seis clases. Solo existe evidencia de una clase: `broken`.
+## Control de sesiones duplicadas
 
-Para entrenar un clasificador de seis clases se necesita recopilar ventanas correspondientes a todas las clases. Como recomendación inicial de prueba, cada clase debería tener múltiples ventanas separadas en `train`, `val` y `test`; con una sola ventana por clase no se puede evaluar generalización de forma fiable.
+El monitor comprueba, dentro de su proceso, si ya existe una escucha activa y
+rechaza iniciar otra. Audio, metadata y entrenamiento se asocian al mismo
+`listener_id`.
 
-## Qué hacer con los procesos duplicados
+Si existen dos procesos antiguos de `web_monitor.py` iniciados por separado,
+deben detenerse manualmente y reiniciar una única instancia. La protección
+del nuevo código no puede eliminar procesos creados por otra instancia ya
+iniciada.
 
-No conviene resolverlo matando procesos manualmente cada vez. La solución correcta es que el monitor mantenga una única sesión activa:
+Una sesión antigua tampoco adquiere WAV retroactivamente. Para usar esta
+corrección se debe iniciar una sesión nueva después de reiniciar el monitor.
 
-1. Antes de iniciar una nueva escucha, comprobar si existe una sesión activa.
-2. Reutilizarla o detenerla limpiamente.
-3. Asociar audio, metadata y logs al mismo `listener_id`.
-4. Impedir dos listeners simultáneos para la misma URL.
-5. Al detener la sesión, actualizar correctamente:
-   - `session.metadata.json`
-   - `metadata.status.json`
-   - `training_request.json`
+## Criterios de bloqueo correctos
 
-## Qué no debe hacerse
+El entrenamiento permanece bloqueado cuando no hay audio, eventos metadata,
+duración mínima, WAV, contexto CNC o características CNC obligatorias; cuando
+falta alguna de las seis clases; cuando no se pueden crear `train`, `val` y
+`test`; o cuando el dataset contiene labels inconsistentes.
 
-No recomiendo:
+Estos bloqueos protegen contra entrenar con datos incompletos o con labels
+generados por el propio modelo.
 
-- Cambiar manualmente `context_dim` de `0` a `7` dentro del JSON.
-- Cambiar las clases del checkpoint sin reentrenar.
-- Usar la predicción `good` como label.
-- Convertir `quality_score` directamente en una probabilidad.
-- Entrenar con solo las dos ventanas actuales.
-- Mezclar las clases sintéticas antiguas con las clases reales del stream.
-- Lanzar entrenamiento mientras todavía existen listeners duplicados.
+## Lo que no debe hacerse
 
-## Resultado esperado después de corregirlo
+- No editar manualmente `context_dim` dentro de un checkpoint.
+- No cambiar `class_names` de un checkpoint ya entrenado.
+- No usar `predicted_label` como target.
+- No convertir la confianza softmax en calidad industrial.
+- No usar `quality_score` como probabilidad del modelo.
+- No entrenar con las dos ventanas antiguas de 10 segundos.
+- No mezclar las clases sintéticas históricas con las etiquetas reales del
+  stream.
+- No aceptar contextos CNC incompletos rellenando valores arbitrarios.
+- No ejecutar dos listeners sobre la misma fuente.
 
-El botón de entrenamiento debería hacer esto:
+## Verificación realizada
 
-1. Verificar que existe una única sesión activa.
-2. Verificar audio recibido.
-3. Verificar metadata CNC válida.
-4. Verificar labels `quality` válidos.
-5. Verificar que hay datos para todas las clases.
-6. Construir el dataset.
-7. Iniciar una nueva corrida CNN1D-VAE multimodal.
-8. Mostrar métricas:
-   - pérdida de entrenamiento;
-   - pérdida de validación;
-   - accuracy;
-   - macro-F1;
-   - matriz de confusión;
-   - métricas por clase;
-   - `context_dim`;
-   - checkpoint generado.
+```text
+py_compile: correcto
+git diff --check: correcto
+tests de streaming, CNC multimodal y features: 32 passed
+```
 
-La corrección real consiste, por tanto, en implementar el pipeline `stream → dataset multimodal → nuevo entrenamiento → nuevo checkpoint`, no en desbloquear artificialmente el checkpoint actual.
+La validación de código no equivale todavía a un entrenamiento real. El
+entrenamiento real requiere una nueva sesión RTSP con audio, contextos CNC
+completos y muestras distribuidas entre las seis clases.
 
+## Próximo paso operativo
+
+1. Detener las instancias antiguas de `web_monitor.py` y listeners RTSP.
+2. Reiniciar una única instancia del monitor.
+3. Iniciar una nueva sesión RTSP.
+4. Mantener la captura hasta disponer de las seis clases y contextos válidos.
+5. Detener la escucha.
+6. Pulsar el botón de entrenamiento.
+7. Revisar `dataset_report.json`, `training.log` y `training_run/metrics.json`.
+
+El nuevo `best.pt` debe configurarse como checkpoint activo únicamente después
+de revisar sus métricas y confirmar que su contrato contiene audio + CNC y las
+seis clases esperadas.
