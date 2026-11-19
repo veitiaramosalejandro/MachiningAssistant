@@ -25,6 +25,7 @@ from Dataset.Preprocessing.fourclass_data import (
     DEFAULT_DATA_DIR, SAMPLE_RATE, VALID_FRAMES, RawFourClassDataset,
     fit_normalizer, load_class_names, load_manifest, model_input_length,
 )
+from Dataset.Preprocessing.cnc_features import CncFeatureNormalizer, FEATURE_NAMES
 from Dataset.Preprocessing.active_dataset import resolve_dataset_dir
 from device_support import resolve_device
 from training_support import (
@@ -45,7 +46,9 @@ DEFAULTS = {
     'seed': 42,
     'eval_every': 20,
     'test_during_training': True,
-    'device': 'auto'
+    'device': 'auto',
+    'context_embedding_dim': 8,
+    'cnc_context': None,
 }
 LOCKED_SETTINGS = (
     'data_dir',
@@ -55,8 +58,56 @@ LOCKED_SETTINGS = (
     'beta',
     'gradient_clip',
     'seed',
-    'threads'
+    'threads',
+    'context_embedding_dim',
+    'cnc_context',
 )
+
+
+def load_cnc_contexts(path):
+    """Load raw service contexts keyed by sample_id from a JSON sidecar.
+
+    Accepted forms are ``{"sample_id": {context...}}`` and a list of
+    ``{"sample_id": ..., "context": {...}}`` records. The sidecar is an
+    offline training artifact; live services should send the same context
+    contract before inference.
+    """
+    path = Path(path).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f'CNC context JSON not found: {path}')
+    payload = json.loads(path.read_text(encoding='utf-8-sig'))
+    if isinstance(payload, dict) and isinstance(payload.get('records'), list):
+        records = payload['records']
+    elif isinstance(payload, dict):
+        records = [{'sample_id': sample_id, 'context': context}
+                   for sample_id, context in payload.items()]
+    elif isinstance(payload, list):
+        records = payload
+    else:
+        raise ValueError('CNC context JSON must be a mapping or a records list')
+    contexts = {}
+    for record in records:
+        if not isinstance(record, dict) or not isinstance(record.get('sample_id'), str):
+            raise ValueError('Each CNC context record needs a string sample_id')
+        if record['sample_id'] in contexts:
+            raise ValueError(f'Duplicate CNC context sample_id: {record["sample_id"]}')
+        context = record.get('context', record)
+        if not isinstance(context, dict):
+            raise ValueError(f'CNC context for {record["sample_id"]} must be an object')
+        contexts[record['sample_id']] = context
+    if not contexts:
+        raise ValueError('CNC context JSON contains no records')
+    return contexts
+
+
+def _batch_parts(batch):
+    if len(batch) == 2:
+        signal, labels = batch
+        return signal, None, labels
+    if len(batch) == 3:
+        signal, context, labels = batch
+        return signal, context, labels
+    raise ValueError('Classification batch must contain signal, optional context and labels')
 
 
 def joint_loss(output, labels, signal, valid_frames, reconstruction_weight=.05, beta=.001):
@@ -165,9 +216,11 @@ def evaluate(model, loader, class_names):
     device = next(model.parameters()).device
     truths, scores = [], []
     with torch.inference_mode():
-        for signal, labels in loader:
+        for batch in loader:
+            signal, context, labels = _batch_parts(batch)
             # Classification uses mu; eval mode also disables latent sampling.
-            logits = model(signal.to(device), reconstruct=False)['logits']
+            kwargs = {} if context is None else {'context': context.to(device)}
+            logits = model(signal.to(device), reconstruct=False, **kwargs)['logits']
             probabilities = logits.softmax(dim=-1)
             if not torch.isfinite(probabilities).all():
                 raise RuntimeError('Non-finite class scores')
@@ -208,6 +261,10 @@ def _parser():
     parser.add_argument('--csv', type=Path, help='One combined samples.csv with a split column for train/val/test')
     parser.add_argument('--output-dir', type=Path, help='New empty run directory; default: runs/train/<timestamp>/classification/<model>')
     parser.add_argument('--resume', type=Path, help='Matching full classification checkpoint; reconstruction/MSM checkpoints are not accepted')
+    parser.add_argument('--cnc-context', type=Path,
+                        help='JSON sidecar with one raw MachiningContext per sample_id')
+    parser.add_argument('--context-embedding-dim', type=int,
+                        help='CNC MLP embedding width for multimodal CNN1D-VAE; default 8')
     parser.add_argument('--epochs', type=int, help='Total target epoch, including completed epochs; default 20')
     parser.add_argument('--batch-size', type=int, help='Default 1 for full five-second waveforms')
     parser.add_argument('--lstm-frame-size', type=int,
@@ -237,7 +294,7 @@ def _settings(args, previous):
         requested = getattr(args, key)
         if requested is None:
             continue
-        if key in ('data_dir', 'csv'):
+        if key in ('data_dir', 'csv', 'cnc_context') and requested is not None:
             requested = str(Path(requested).expanduser().resolve())
         if previous is not None and key == 'csv' and requested != settings['csv']:
             raise ValueError('Resume CSV differs from the saved input. Start a new run to select a different CSV.')
@@ -247,6 +304,8 @@ def _settings(args, previous):
     settings['data_dir'] = str(Path(settings['data_dir']).expanduser().resolve())
     if settings['csv'] is not None:
         settings['csv'] = str(Path(settings['csv']).expanduser().resolve())
+    if settings['cnc_context'] is not None:
+        settings['cnc_context'] = str(Path(settings['cnc_context']).expanduser().resolve())
     for key in ('epochs', 'batch_size', 'threads', 'eval_every'):
         if settings[key] < 1:
             raise ValueError(f'{key} must be positive')
@@ -256,6 +315,8 @@ def _settings(args, previous):
     for key in ('reconstruction_weight', 'beta'):
         if not np.isfinite(settings[key]) or settings[key] < 0:
             raise ValueError(f'{key} must be finite and nonnegative')
+    if settings.get('context_embedding_dim', 8) < 1:
+        raise ValueError('context_embedding_dim must be positive')
     return settings
 
 
@@ -290,6 +351,23 @@ def run_training(StateClassifier, ModelConfig, model_family, argv=None, *, valid
     if absent:
         raise ValueError(f'Configured classes missing from train.csv: {absent}')
     input_length = model_input_length(model_family, valid_frames=valid_frames)
+    raw_contexts = None
+    context_vectors = None
+    context_normalizer = None
+    context_dim = 0
+    context_embedding_dim = int(settings.get('context_embedding_dim', 8))
+    if settings.get('cnc_context') is not None:
+        if model_family != 'CNN1D-VAE':
+            raise ValueError('CNC multimodal input is currently supported only for CNN1D-VAE')
+        raw_contexts = load_cnc_contexts(settings['cnc_context'])
+        sample_ids = {row['sample_id'] for row in rows}
+        if set(raw_contexts) != sample_ids:
+            missing = sorted(sample_ids - set(raw_contexts))
+            unknown = sorted(set(raw_contexts) - sample_ids)
+            if missing:
+                raise ValueError(f'Missing CNC context for sample_id: {missing[0]}')
+            raise ValueError(f'CNC context contains unknown sample_id: {unknown[0]}')
+        context_dim = len(FEATURE_NAMES)
     identity = data_identity(data_dir, rows, class_names, valid_frames)
     if checkpoint is not None:
         if checkpoint.get('class_names') != class_names or checkpoint.get('num_classes') != len(class_names):
@@ -303,6 +381,13 @@ def run_training(StateClassifier, ModelConfig, model_family, argv=None, *, valid
                 and args.lstm_frame_size != config.frame_size):
             raise ValueError('Resume frame_size differs from the checkpoint. Framing changes the model architecture; start a new run without --resume.')
         normalizer = deepcopy(checkpoint['normalizer'])
+        saved_context_dim = int(checkpoint.get('context_dim', 0))
+        if saved_context_dim != context_dim:
+            raise ValueError('Resume context configuration differs from the checkpoint')
+        context_embedding_dim = int(checkpoint.get('context_embedding_dim', context_embedding_dim))
+        saved_context_normalizer = checkpoint.get('context_normalizer')
+        if context_dim and not isinstance(saved_context_normalizer, dict):
+            raise ValueError('Multimodal checkpoint lacks context_normalizer')
     else:
         config_values = dict(sequence_length=input_length, input_channels=2, latent_dim=16,
                              logvar_min=-10., logvar_max=10.)
@@ -310,6 +395,18 @@ def run_training(StateClassifier, ModelConfig, model_family, argv=None, *, valid
             config_values['frame_size'] = args.lstm_frame_size if args.lstm_frame_size is not None else 441
         config = ModelConfig(**config_values)
         normalizer = fit_normalizer(data_dir, subsets['train'])
+        saved_context_normalizer = None
+    if context_dim:
+        if saved_context_normalizer is not None:
+            context_normalizer = CncFeatureNormalizer.from_dict(saved_context_normalizer)
+        else:
+            context_normalizer = CncFeatureNormalizer.fit_contexts(
+                [raw_contexts[row['sample_id']] for row in subsets['train']]
+            )
+        context_vectors = {
+            sample_id: context_normalizer.transform_context(context)
+            for sample_id, context in raw_contexts.items()
+        }
     completed_epoch = int(previous['completed_epoch']) if previous is not None else 0
     if settings['epochs'] < completed_epoch:
         raise ValueError(f'Target --epochs must be at least completed epoch {completed_epoch}')
@@ -331,10 +428,14 @@ def run_training(StateClassifier, ModelConfig, model_family, argv=None, *, valid
     torch.set_num_threads(settings['threads'])
     device = resolve_device(settings['device'])
     random.seed(settings['seed']); np.random.seed(settings['seed']); torch.manual_seed(settings['seed'])
-    model = StateClassifier(config, num_classes=len(class_names)).to(device)
+    model_kwargs = {}
+    if context_dim:
+        model_kwargs = {'context_dim': context_dim, 'context_embedding_dim': context_embedding_dim}
+    model = StateClassifier(config, num_classes=len(class_names), **model_kwargs).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=settings['learning_rate'], weight_decay=1e-4)
     generators = {split: torch.Generator().manual_seed(settings['seed']+index) for index, split in enumerate(SPLITS)}
-    datasets = {split: RawFourClassDataset(data_dir, subset, normalizer, input_length, valid_frames=valid_frames)
+    datasets = {split: RawFourClassDataset(data_dir, subset, normalizer, input_length,
+                                           valid_frames=valid_frames, context_vectors=context_vectors)
                 for split, subset in subsets.items()}
     loaders = {split: DataLoader(dataset, batch_size=settings['batch_size'], shuffle=(split == 'train'),
                                   generator=generators[split], num_workers=0)
@@ -357,6 +458,9 @@ def run_training(StateClassifier, ModelConfig, model_family, argv=None, *, valid
                  'model_config': asdict(config), 'sample_rate': SAMPLE_RATE, 'valid_frames': valid_frames,
                  'input_length': input_length, 'class_names': class_names, 'num_classes': len(class_names),
                  'normalizer': deepcopy(normalizer), 'normalizer_fitted_to': 'train CSV only, complete valid frames',
+                 'context_dim': context_dim, 'context_embedding_dim': context_embedding_dim,
+                 'context_normalizer': None if context_normalizer is None else context_normalizer.to_dict(),
+                 'context_source': settings.get('cnc_context'),
                  'model_state_dict': clone_model_state(model) if model_state is None else model_state,
                  'checkpoint_epoch': epoch, 'scores_calibrated': False, 'device': str(device),
                  'resumed_from': str(resume_path) if resume_path else None, **metadata}
@@ -375,6 +479,8 @@ def run_training(StateClassifier, ModelConfig, model_family, argv=None, *, valid
                  'model_config': asdict(config), 'valid_frames': valid_frames, 'input_length': input_length,
                  'padding_frames': input_length-valid_frames, 'sample_rate': SAMPLE_RATE,
                  'class_names': class_names, 'num_classes': len(class_names),
+                 'context_dim': context_dim, 'context_embedding_dim': context_embedding_dim,
+                 'context_normalizer': None if context_normalizer is None else context_normalizer.to_dict(),
                  'normalizer': normalizer, 'model_selection': 'validation sample macro F1 only',
                  'resumed_from': str(resume_path) if resume_path else None, **metadata}, output/'training_config.json')
     atomic_json({str(index): name for index, name in enumerate(class_names)}, output/'labels.json')
@@ -417,10 +523,14 @@ def run_training(StateClassifier, ModelConfig, model_family, argv=None, *, valid
         for epoch in range(completed_epoch+1, settings['epochs']+1):
             started = time.perf_counter(); model.train()
             sums = {'loss': 0., 'ce_loss': 0., 'reconstruction_loss': 0., 'kl_loss': 0.}; count = 0
-            for batch_index, (signal, labels) in enumerate(loaders['train'], start=1):
+            for batch_index, batch in enumerate(loaders['train'], start=1):
+                signal, context, labels = _batch_parts(batch)
                 signal, labels = signal.to(device), labels.to(device)
+                if context is not None:
+                    context = context.to(device)
                 optimizer.zero_grad(set_to_none=True)
-                values = joint_loss(model(signal, reconstruct=settings['reconstruction_weight'] > 0),
+                kwargs = {} if context is None else {'context': context}
+                values = joint_loss(model(signal, reconstruct=settings['reconstruction_weight'] > 0, **kwargs),
                                     labels, signal, valid_frames, settings['reconstruction_weight'], settings['beta'])
                 if not torch.isfinite(values['loss']):
                     raise RuntimeError('Non-finite classification training loss')

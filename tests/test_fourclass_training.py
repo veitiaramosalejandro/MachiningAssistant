@@ -113,6 +113,34 @@ def test_reconstruction_loss_excludes_alignment_padding_and_keeps_valid_gradient
     assert prediction.grad[:, VALID:].count_nonzero() == 0
 
 
+def test_cnn_multimodal_training_consumes_context_and_persists_contract(tmp_path, monkeypatch):
+    data = tmp_path/'data'; make_data(data, class_count=3)
+    context_path = tmp_path/'contexts.json'
+    contexts = {}
+    for row in load_manifest(data, valid_frames=VALID):
+        sample_id = row['sample_id']
+        contexts[sample_id] = {
+            'SchemaVersion': 1, 'ContextId': f'ctx-{sample_id}',
+            'MachineId': 'machine-1', 'DriverSessionId': 'session-1',
+            'OccurredAtUtc': '2026-01-01T00:00:00Z',
+            'ActualSpindleRpm': 8000 + row['label_index'],
+            'ActualFeedMmPerMin': 1200 + row['label_index'],
+            'SPowerPercent': 40 + row['label_index'], 'WPowerPercent': 20,
+            'ToolDiameterMm': 10, 'ToolTeethCount': 4,
+            'ToolRemainingUsePercent': 90 - row['label_index'],
+        }
+    context_path.write_text(json.dumps(contexts), encoding='utf-8')
+    classes = model_classes('CNN1D-VAE', monkeypatch)
+    output = tmp_path/'run'
+    assert call_train(classes, 'CNN1D-VAE', data, output, 1,
+                      '--cnc-context', str(context_path), '--eval-every', '1') == 0
+    checkpoint = load_checkpoint(output/'last.pt')
+    assert checkpoint['context_dim'] == 7
+    assert checkpoint['context_embedding_dim'] == 8
+    assert checkpoint['context_normalizer']['context_schema_version'] == 2
+    assert 'context_encoder.0.weight' in checkpoint['model_state_dict']
+
+
 def test_metrics_keep_all_configured_classes_but_balance_only_present_true_classes():
     metrics = training.classification_metrics([0, 2], [0, 2], ['a', 'b', 'c'])
     assert metrics['accuracy'] == metrics['balanced_accuracy'] == 1

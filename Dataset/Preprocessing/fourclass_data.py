@@ -247,20 +247,30 @@ def prepare_signal(pcm, normalizer, input_length, valid_frames=VALID_FRAMES):
 
 
 class RawFourClassDataset(Dataset):
-    """Lazy CSV-indexed WAV samples; only waveform values enter the model."""
+    """Lazy WAV samples with optional normalized CNC vectors.
 
-    def __init__(self, data_dir, rows, normalizer, input_length, valid_frames=VALID_FRAMES):
+    Without ``context_vectors`` the legacy item is ``(signal, label)``. With
+    it, the multimodal item is ``(signal, context, label)``.
+    """
+
+    def __init__(self, data_dir, rows, normalizer, input_length, valid_frames=VALID_FRAMES,
+                 context_vectors=None):
         self.data_dir = Path(data_dir).expanduser().resolve()
         self.rows = list(rows)
         self.normalizer = normalizer
         self.input_length = input_length
         self.valid_frames = valid_frames
+        self.context_vectors = context_vectors
         self.class_names = load_class_names(self.data_dir)
         if any(not 0 <= row['label_index'] < len(self.class_names) or
                row['label'] != self.class_names[row['label_index']] for row in self.rows):
             raise ValueError('Dataset row labels do not match labels.json')
         if input_length not in {model_input_length('CNN1D-VAE', valid_frames), model_input_length('LSTM-VAE', valid_frames)}:
             raise ValueError('input_length must preserve the complete valid signal with only stride-alignment padding')
+        if context_vectors is not None:
+            missing = [row['sample_id'] for row in self.rows if row['sample_id'] not in context_vectors]
+            if missing:
+                raise ValueError(f'Missing CNC context for sample_id: {missing[0]}')
 
     def __len__(self):
         return len(self.rows)
@@ -269,4 +279,8 @@ class RawFourClassDataset(Dataset):
         row = self.rows[index]
         _, pcm = read_wav(_wav_path(self.data_dir, row['wav_file']), expected_frames=self.valid_frames)
         signal = prepare_signal(pcm, self.normalizer, self.input_length, self.valid_frames)
-        return torch.from_numpy(signal), torch.tensor(row['label_index'], dtype=torch.long)
+        label = torch.tensor(row['label_index'], dtype=torch.long)
+        if self.context_vectors is None:
+            return torch.from_numpy(signal), label
+        context = np.asarray(self.context_vectors[row['sample_id']], dtype=np.float32)
+        return torch.from_numpy(signal), torch.from_numpy(np.ascontiguousarray(context)), label
