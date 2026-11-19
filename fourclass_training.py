@@ -606,7 +606,9 @@ def run_training(StateClassifier, ModelConfig, model_family, argv=None, *, valid
                    'padding_frames': input_length-valid_frames,
                    'scores_calibrated': False, 'validated_for_real_machine_faults': False,
                    'final_checkpoint': str(output/'final.pt'), 'last_checkpoint': str(output/'last.pt'),
-                   'model_input': 'Full raw stereo waveform only; no label-generation parameters or metadata features',
+                   'model_input': ('Full raw stereo waveform plus normalized CNC context; labels come from the dataset CSV'
+                                   if context_dim else
+                                   'Full raw stereo waveform only; no label-generation parameters or metadata features'),
                    'test_selection_policy': 'Periodic test is observational only; best uses validation macro F1', **metadata}
         atomic_json(metrics, output/'metrics.json')
         predictions = []
