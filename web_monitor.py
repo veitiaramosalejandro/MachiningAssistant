@@ -337,8 +337,23 @@ def _align_rtsp_training_windows(job: dict) -> dict:
     messages = _read_json_lines(Path(str(job.get("metadata_stream_output", ""))))
     session_metadata = _read_json_file(Path(str(job.get("metadata_output", ""))), {})
     occurred_at_utc = session_metadata.get("started_at_utc") if isinstance(session_metadata, dict) else None
-    snapshots = [item for item in messages if item.get("type") == "snapshot"]
-    raw_events = [item for item in messages if item.get("type") == "event"]
+    # The metadata endpoint can replay several historical recordings when a
+    # client connects.  Playback timestamps restart at zero for each one, so
+    # selecting snapshots only by timestamp can attach a window to an
+    # unrelated recording.  The first stream_start is the active recording
+    # announced for this listener; keep its messages together for alignment.
+    stream_starts = [
+        item for item in messages
+        if item.get("type") == "stream_start" and item.get("recordingId")
+    ]
+    active_recording_id = stream_starts[0].get("recordingId") if stream_starts else None
+    scoped_messages = (
+        [item for item in messages if item.get("recordingId") == active_recording_id]
+        if active_recording_id
+        else messages
+    )
+    snapshots = [item for item in scoped_messages if item.get("type") == "snapshot"]
+    raw_events = [item for item in scoped_messages if item.get("type") == "event"]
     events = []
     seen_events = set()
     for item in raw_events:
@@ -562,6 +577,20 @@ def rtsp_listener_status(listener_id: str) -> dict:
         if job is None:
             raise FileNotFoundError("No existe la sesión RTSP solicitada")
         return _rtsp_listener_public(job)
+
+
+def active_rtsp_listener_status() -> dict:
+    """Return the active listener so a refreshed browser can recover it."""
+    with _rtsp_listener_lock:
+        for listener_id, job in _rtsp_listener_jobs.items():
+            process = job.get("process")
+            metadata_process = job.get("metadata_process")
+            if ((process is not None and process.poll() is None)
+                    or (metadata_process is not None and metadata_process.poll() is None)):
+                result = _rtsp_listener_public(job)
+                result["active"] = True
+                return result
+    return {"active": False, "listener_id": None}
 
 
 def stop_rtsp_listener(listener_id: str) -> dict:
@@ -1731,6 +1760,9 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/rtsp-training/listener/status":
                 listener_id = parse_qs(parsed.query).get("listener_id", [""])[0]
                 self.send_json(rtsp_listener_status(listener_id))
+                return
+            if parsed.path == "/api/rtsp-training/listener/active":
+                self.send_json(active_rtsp_listener_status())
                 return
             if parsed.path == "/api/inference/result":
                 inference_id = parse_qs(parsed.query).get("inference_id", [""])[0]
