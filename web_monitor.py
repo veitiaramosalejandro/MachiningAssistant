@@ -19,7 +19,7 @@ import threading
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, quote, urlparse, urlsplit, urlunsplit
+from urllib.parse import parse_qs, quote, unquote, urlparse, urlsplit, urlunsplit
 import uuid
 import wave
 
@@ -102,10 +102,34 @@ def _safe_rtsp_url(value: object) -> tuple[str, str]:
     return raw, redacted
 
 
+def _prefer_ipv4_loopback(url: str) -> str:
+    """Avoid Windows localhost/IPv6 resolution for the local RTSP publisher."""
+    parts = urlsplit(url)
+    if (parts.hostname or "").lower() != "localhost":
+        return url
+    userinfo = ""
+    if parts.username is not None:
+        userinfo = quote(parts.username, safe="")
+        if parts.password is not None:
+            userinfo += ":" + quote(parts.password, safe="*")
+        userinfo += "@"
+    netloc = userinfo + "127.0.0.1"
+    if parts.port:
+        netloc += f":{parts.port}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
 def _rtsp_credentials(payload: dict) -> tuple[str, str]:
     """Resolve credentials without persisting or returning the password."""
-    username = str(payload.get("rtsp_username", "") or "").strip() or setting("MACHINING_RTSP_USERNAME", "")
-    password = str(payload.get("rtsp_password", "") or "") or setting("MACHINING_RTSP_PASSWORD", "")
+    payload_username = str(payload.get("rtsp_username", "") or "").strip()
+    payload_password = str(payload.get("rtsp_password", "") or "")
+    # Prefer the project URL credentials over stale process-level variables.
+    configured_url = PROJECT_ENV.get("MACHINING_RTSP_URL", "") or setting("MACHINING_RTSP_URL", "")
+    configured_parts = urlsplit(configured_url)
+    configured_username = unquote(configured_parts.username or "")
+    configured_password = unquote(configured_parts.password or "")
+    username = payload_username or configured_username or setting("MACHINING_RTSP_USERNAME", "")
+    password = payload_password or configured_password or setting("MACHINING_RTSP_PASSWORD", "")
     return username.strip(), password
 
 
@@ -123,7 +147,8 @@ def validate_rtsp_training_source(payload: dict) -> dict:
     if username or password:
         if not username or not password:
             raise ValueError("rtsp_username y rtsp_password deben recibirse juntos")
-        source = urlunsplit((parts.scheme, f"{quote(username, safe='')}:{quote(password, safe='')}@{parts.hostname}{f':{parts.port}' if parts.port else ''}", parts.path, parts.query, ""))
+        source = urlunsplit((parts.scheme, f"{quote(username, safe='')}:{quote(password, safe='*')}@{parts.hostname}{f':{parts.port}' if parts.port else ''}", parts.path, parts.query, ""))
+    source = _prefer_ipv4_loopback(source)
     timeout_s = int(payload.get("probe_timeout_seconds", 15))
     if timeout_s not in {5, 10, 15, 30}:
         raise ValueError("probe_timeout_seconds no está entre las opciones permitidas")
@@ -197,7 +222,8 @@ def start_rtsp_listener(payload: dict) -> dict:
         if not username or not password:
             raise ValueError("rtsp_username y rtsp_password deben recibirse juntos")
         parts = urlsplit(source)
-        source = urlunsplit((parts.scheme, f"{quote(username, safe='')}:{quote(password, safe='')}@{parts.hostname}{f':{parts.port}' if parts.port else ''}", parts.path, parts.query, ""))
+        source = urlunsplit((parts.scheme, f"{quote(username, safe='')}:{quote(password, safe='*')}@{parts.hostname}{f':{parts.port}' if parts.port else ''}", parts.path, parts.query, ""))
+    source = _prefer_ipv4_loopback(source)
     transport = str(payload.get("transport", "tcp"))
     if transport not in {"tcp", "udp"}:
         raise ValueError("transport no está permitido")
@@ -399,16 +425,15 @@ def _rtsp_stream_observation(job: dict) -> dict:
     for item in messages:
         message_type = str(item.get("type", "unknown"))
         type_counts[message_type] = type_counts.get(message_type, 0) + 1
-    events = []
-    for item in messages:
-        if item.get("type") != "event":
-            continue
+    def event_row(item: dict) -> dict:
         event = item.get("event") if isinstance(item.get("event"), dict) else {}
         parameters = event.get("parameters") if isinstance(event.get("parameters"), dict) else {}
         spindle = parameters.get("SpindleSpeed") if isinstance(parameters.get("SpindleSpeed"), dict) else {}
         feed = parameters.get("FeedRate") if isinstance(parameters.get("FeedRate"), dict) else {}
-        events.append({
+        return {
             "timestamp_seconds": item.get("timestampSeconds"),
+            "recording_id": item.get("recordingId"),
+            "sequence": item.get("sequence"),
             "occurrence": event.get("occurrence"),
             "value": event.get("value"),
             "machine_state": event.get("machine_state_label") or event.get("machine_state"),
@@ -419,15 +444,50 @@ def _rtsp_stream_observation(job: dict) -> dict:
             "adjusted_rpm": spindle.get("AdjustedRpm"),
             "programmed_feed": feed.get("ProgrammedMmPerMin"),
             "adjusted_feed": feed.get("AdjustedMmPerMin"),
-        })
+        }
+
+    seen_count = int(job.get("metadata_observation_count", 0))
+    grace_until = float(job.setdefault(
+        "metadata_history_grace_until",
+        time.time() + float(job.get("metadata_history_grace_seconds", 10)),
+    ))
+    history_initialized = bool(job.get("metadata_history_initialized", False))
+    phase = str(job.get("metadata_phase", "historical_bootstrap"))
+    history_recording_ids = set(job.get("history_recording_ids", []))
+    historical_events = list(job.get("historical_events", []))
+    current_events = list(job.get("current_events", []))
+    for item in messages[seen_count:]:
+        recording_id = str(item.get("recordingId") or "")
+        # The publisher may reuse recordingId across a resumed/current stream.
+        # Arrival phase is therefore authoritative after the initial history
+        # window; recordingId is retained only as diagnostic information.
+        is_historical = (not history_initialized) or time.time() < grace_until
+        if is_historical and recording_id:
+            history_recording_ids.add(recording_id)
+        if item.get("type") == "event":
+            (historical_events if is_historical else current_events).append(event_row(item))
+        if not is_historical:
+            phase = "current"
+    if time.time() < grace_until:
+        phase = "historical_bootstrap"
+    elif phase != "current":
+        phase = "waiting_new_recording"
+    job["metadata_observation_count"] = len(messages)
+    job["metadata_history_initialized"] = True
+    job["metadata_phase"] = phase
+    job["history_recording_ids"] = sorted(history_recording_ids)
+    job["historical_events"] = historical_events[-100:]
+    job["current_events"] = current_events[-100:]
     snapshots = [item for item in messages if item.get("type") == "snapshot"]
     latest_snapshot = snapshots[-1] if snapshots else None
     return {
         "message_counts": type_counts,
         "metadata_messages": len(messages),
-        "metadata_events": len(events),
+        "metadata_events": len(historical_events) + len(current_events),
         "metadata_snapshots": len(snapshots),
-        "recent_events": events[-50:],
+        "historical_events": historical_events[-50:],
+        "current_events": current_events[-50:],
+        "metadata_phase": phase,
         "latest_snapshot": latest_snapshot,
         "recent_audio_predictions": predictions[-25:],
     }
@@ -441,9 +501,16 @@ def _rtsp_listener_public(job: dict) -> dict:
         if return_code is not None and job.get("status") not in {"stopped", "failed"}:
             job["status"] = "completed" if return_code == 0 else "failed"
             job["return_code"] = return_code
+        if return_code is not None and return_code != 0 and metadata_process is not None and metadata_process.poll() is None:
+            # Audio is the primary listener. Do not leave a metadata child
+            # running after FFprobe/FFmpeg has failed, otherwise the UI reports
+            # a misleading mixed state: audio failed, metadata running.
+            metadata_process.terminate()
+            job["metadata_status"] = "stopped_audio_failed"
     if metadata_process is not None:
         metadata_return_code = metadata_process.poll()
-        job["metadata_status"] = "running" if metadata_return_code is None else ("completed" if metadata_return_code == 0 else "failed")
+        if job.get("metadata_status") != "stopped_audio_failed":
+            job["metadata_status"] = "running" if metadata_return_code is None else ("completed" if metadata_return_code == 0 else "failed")
         job["metadata_return_code"] = metadata_return_code
     training_process = job.get("training_process")
     if training_process is not None:
@@ -514,6 +581,20 @@ def stop_rtsp_listener(listener_id: str) -> dict:
         return _rtsp_listener_public(job)
 
 
+def _next_rtsp_training_paths(session_dir: Path) -> tuple[Path, Path, str]:
+    """Return a non-destructive output folder for an RTSP training attempt."""
+    first_output = session_dir / "training_run"
+    first_log = session_dir / "training.log"
+    if not first_output.exists() or not any(first_output.iterdir()):
+        return first_output, first_log, ""
+    for attempt in range(2, 1000):
+        suffix = f"_attempt_{attempt:02d}"
+        output = session_dir / f"training_run{suffix}"
+        if not output.exists():
+            return output, session_dir / f"training{suffix}.log", suffix
+    raise RuntimeError("No hay un directorio disponible para otro intento de entrenamiento RTSP")
+
+
 def request_rtsp_training(payload: dict) -> dict:
     listener_id = str(payload.get("listener_id", ""))
     rtsp_listener_status(listener_id)
@@ -567,8 +648,8 @@ def request_rtsp_training(payload: dict) -> dict:
             device = str(payload.get("device", "auto"))
             if device not in {"auto", "cpu", "cuda"}:
                 raise ValueError("device no está permitido")
-            training_output = session_dir / "training_run"
-            training_log = session_dir / "training.log"
+            training_output, training_log, attempt_suffix = _next_rtsp_training_paths(session_dir)
+            training_id = f"{listener_id}_rtsp_cnn{attempt_suffix}"
             command = [str(PYTHON), str(PROJECT_ROOT / "CNN1D-VAE" / "train_fourclass.py"),
                        "--data-dir", str(dataset_dir), "--csv", str(dataset_dir / "samples.csv"),
                        "--cnc-context", str(dataset_dir / "contexts.json"),
@@ -581,10 +662,10 @@ def request_rtsp_training(payload: dict) -> dict:
                                                     stdout=log_handle, stderr=subprocess.STDOUT, text=True)
             finally:
                 log_handle.close()
-            job.update({"training_id": f"{listener_id}_rtsp_cnn", "training_status": "running",
+            job.update({"training_id": training_id, "training_status": "running",
                         "training_process": training_process, "training_output": str(training_output),
                         "training_log": str(training_log)})
-            report.update({"accepted": True, "status": "running", "training_id": job["training_id"],
+            report.update({"accepted": True, "status": "running", "training_id": training_id,
                            "training_output": str(training_output), "training_log": str(training_log),
                            "command": command})
     request_path = Path(str(job.get("training_request_output", "")))
