@@ -24,7 +24,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from Integration.grpc_service import _load_env_file
-from Integration.rtsp_context import playback_message_to_context
+from Integration.rtsp_cnc_metadata import StreamCncMetadata
 from Integration.simulate_monitor import load_engine
 from classification_streaming import StreamingClassifier
 
@@ -73,9 +73,9 @@ class MetadataTimeline:
             raise RuntimeError(f"No x-machining-metadata snapshot is available for audio window [{start_s:.3f}, {end_s:.3f})")
         _, message = max(candidates, key=lambda item: item[0])
         try:
-            return playback_message_to_context(message, self.occurred_at_utc)
+            return StreamCncMetadata.from_message(message).to_mapping()
         except (TypeError, ValueError) as exc:
-            raise RuntimeError(f"Metadata snapshot cannot become a CNN1D-VAE context: {exc}") from exc
+            raise RuntimeError(f"Metadata snapshot cannot become an RTSP CNC context: {exc}") from exc
 
 
 def _env(env: dict[str, str], name: str, fallback: str) -> str:

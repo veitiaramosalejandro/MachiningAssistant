@@ -20,11 +20,12 @@ from torch.utils.data import Dataset
 from .active_dataset import LEGACY_DATA_DIR, resolve_dataset_dir
 
 
-CLASS_NAMES = ('good', 'sufficient', 'bad', 'very_bad')
+CLASS_NAMES = ('excellent', 'good', 'sufficient', 'bad', 'very_bad', 'broken')
 VALID_FRAMES = 220500
 SAMPLE_RATE = 44100
 FS = SAMPLE_RATE
 CHANNELS = 2
+CHANNEL_NAMES = ('sound', 'vibration')
 DEFAULT_DATA_DIR = LEGACY_DATA_DIR
 SPLITS = ('train', 'val', 'test')
 STRING_FIELDS = ('sample_id', 'base_sample_id', 'recording_id', 'source_recording_id', 'split', 'label', 'wav_file')

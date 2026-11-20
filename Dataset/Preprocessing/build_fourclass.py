@@ -29,7 +29,7 @@ from Dataset.Preprocessing.dataset_splits import SPLIT_NAMES, read_split_csv, wr
 DEFAULT_SOURCE = PROJECT_ROOT/'Dataset'/'Data'/'segments_5s'
 DEFAULT_OUTPUT = PROJECT_ROOT/'Dataset'/'Data'/'fourclass_5s'
 DEFAULT_CONFIG = Path(__file__).resolve().parent/'fourclass_config.json'
-LABELS = ('good', 'sufficient', 'bad', 'very_bad')
+LABELS =  ('excellent', 'good', 'sufficient', 'bad', 'very_bad', 'broken')
 ALL_SPLITS = (*SPLIT_NAMES, 'exclude')
 FIELDS = (
     'sample_id', 'base_sample_id', 'recording_id', 'source_recording_id', 'split',

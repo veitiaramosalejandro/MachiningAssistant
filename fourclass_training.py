@@ -27,6 +27,7 @@ from Dataset.Preprocessing.fourclass_data import (
 )
 from Dataset.Preprocessing.cnc_features import CncFeatureNormalizer, FEATURE_NAMES
 from Dataset.Preprocessing.active_dataset import resolve_dataset_dir
+from Integration.rtsp_cnc_metadata import STREAM_FEATURE_NAMES, StreamFeatureNormalizer
 from device_support import resolve_device
 from training_support import (
     atomic_json, atomic_torch_save, capture_rng_state, clone_model_state,
@@ -49,6 +50,7 @@ DEFAULTS = {
     'device': 'auto',
     'context_embedding_dim': 8,
     'cnc_context': None,
+    'cnc_contract': 'machining_context',
 }
 LOCKED_SETTINGS = (
     'data_dir',
@@ -61,6 +63,7 @@ LOCKED_SETTINGS = (
     'threads',
     'context_embedding_dim',
     'cnc_context',
+    'cnc_contract',
 )
 
 
@@ -262,7 +265,9 @@ def _parser():
     parser.add_argument('--output-dir', type=Path, help='New empty run directory; default: runs/train/<timestamp>/classification/<model>')
     parser.add_argument('--resume', type=Path, help='Matching full classification checkpoint; reconstruction/MSM checkpoints are not accepted')
     parser.add_argument('--cnc-context', type=Path,
-                        help='JSON sidecar with one raw MachiningContext per sample_id')
+                        help='JSON sidecar with one raw CNC context payload per sample_id')
+    parser.add_argument('--cnc-contract', choices=('machining_context', 'rtsp_stream'),
+                        help='CNC input contract; rtsp_stream uses StreamCncMetadata')
     parser.add_argument('--context-embedding-dim', type=int,
                         help='CNC MLP embedding width for multimodal CNN1D-VAE; default 8')
     parser.add_argument('--epochs', type=int, help='Total target epoch, including completed epochs; default 20')
@@ -306,6 +311,10 @@ def _settings(args, previous):
         settings['csv'] = str(Path(settings['csv']).expanduser().resolve())
     if settings['cnc_context'] is not None:
         settings['cnc_context'] = str(Path(settings['cnc_context']).expanduser().resolve())
+    if settings.get('cnc_contract') not in {'machining_context', 'rtsp_stream'}:
+        raise ValueError('cnc_contract is not supported')
+    if settings.get('cnc_context') is None and settings.get('cnc_contract') != 'machining_context':
+        raise ValueError('rtsp_stream cnc_contract requires --cnc-context')
     for key in ('epochs', 'batch_size', 'threads', 'eval_every'):
         if settings[key] < 1:
             raise ValueError(f'{key} must be positive')
@@ -356,6 +365,7 @@ def run_training(StateClassifier, ModelConfig, model_family, argv=None, *, valid
     context_normalizer = None
     context_dim = 0
     context_embedding_dim = int(settings.get('context_embedding_dim', 8))
+    context_contract = settings.get('cnc_contract', 'machining_context')
     if settings.get('cnc_context') is not None:
         if model_family != 'CNN1D-VAE':
             raise ValueError('CNC multimodal input is currently supported only for CNN1D-VAE')
@@ -367,7 +377,7 @@ def run_training(StateClassifier, ModelConfig, model_family, argv=None, *, valid
             if missing:
                 raise ValueError(f'Missing CNC context for sample_id: {missing[0]}')
             raise ValueError(f'CNC context contains unknown sample_id: {unknown[0]}')
-        context_dim = len(FEATURE_NAMES)
+        context_dim = len(STREAM_FEATURE_NAMES) if context_contract == 'rtsp_stream' else len(FEATURE_NAMES)
     identity = data_identity(data_dir, rows, class_names, valid_frames)
     if checkpoint is not None:
         if checkpoint.get('class_names') != class_names or checkpoint.get('num_classes') != len(class_names):
@@ -384,6 +394,8 @@ def run_training(StateClassifier, ModelConfig, model_family, argv=None, *, valid
         saved_context_dim = int(checkpoint.get('context_dim', 0))
         if saved_context_dim != context_dim:
             raise ValueError('Resume context configuration differs from the checkpoint')
+        if checkpoint.get('context_contract', 'machining_context') != context_contract:
+            raise ValueError('Resume CNC input contract differs from the checkpoint')
         context_embedding_dim = int(checkpoint.get('context_embedding_dim', context_embedding_dim))
         saved_context_normalizer = checkpoint.get('context_normalizer')
         if context_dim and not isinstance(saved_context_normalizer, dict):
@@ -398,13 +410,21 @@ def run_training(StateClassifier, ModelConfig, model_family, argv=None, *, valid
         saved_context_normalizer = None
     if context_dim:
         if saved_context_normalizer is not None:
-            context_normalizer = CncFeatureNormalizer.from_dict(saved_context_normalizer)
+            context_normalizer = (
+                StreamFeatureNormalizer.from_dict(saved_context_normalizer)
+                if context_contract == 'rtsp_stream'
+                else CncFeatureNormalizer.from_dict(saved_context_normalizer)
+            )
         else:
-            context_normalizer = CncFeatureNormalizer.fit_contexts(
-                [raw_contexts[row['sample_id']] for row in subsets['train']]
+            training_contexts = [raw_contexts[row['sample_id']] for row in subsets['train']]
+            context_normalizer = (
+                StreamFeatureNormalizer.fit_metadata(training_contexts)
+                if context_contract == 'rtsp_stream'
+                else CncFeatureNormalizer.fit_contexts(training_contexts)
             )
         context_vectors = {
-            sample_id: context_normalizer.transform_context(context)
+            sample_id: context_normalizer.transform_metadata(context)
+            if context_contract == 'rtsp_stream' else context_normalizer.transform_context(context)
             for sample_id, context in raw_contexts.items()
         }
     completed_epoch = int(previous['completed_epoch']) if previous is not None else 0
@@ -459,6 +479,8 @@ def run_training(StateClassifier, ModelConfig, model_family, argv=None, *, valid
                  'input_length': input_length, 'class_names': class_names, 'num_classes': len(class_names),
                  'normalizer': deepcopy(normalizer), 'normalizer_fitted_to': 'train CSV only, complete valid frames',
                  'context_dim': context_dim, 'context_embedding_dim': context_embedding_dim,
+                 'context_contract': context_contract,
+                 'context_features': list(STREAM_FEATURE_NAMES if context_contract == 'rtsp_stream' else FEATURE_NAMES),
                  'context_normalizer': None if context_normalizer is None else context_normalizer.to_dict(),
                  'context_source': settings.get('cnc_context'),
                  'model_state_dict': clone_model_state(model) if model_state is None else model_state,
@@ -480,6 +502,8 @@ def run_training(StateClassifier, ModelConfig, model_family, argv=None, *, valid
                  'padding_frames': input_length-valid_frames, 'sample_rate': SAMPLE_RATE,
                  'class_names': class_names, 'num_classes': len(class_names),
                  'context_dim': context_dim, 'context_embedding_dim': context_embedding_dim,
+                 'context_contract': context_contract,
+                 'context_features': list(STREAM_FEATURE_NAMES if context_contract == 'rtsp_stream' else FEATURE_NAMES),
                  'context_normalizer': None if context_normalizer is None else context_normalizer.to_dict(),
                  'normalizer': normalizer, 'model_selection': 'validation sample macro F1 only',
                  'resumed_from': str(resume_path) if resume_path else None, **metadata}, output/'training_config.json')

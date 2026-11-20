@@ -9,6 +9,7 @@ las seis clases de calidad y con todos los campos CNC requeridos.
 La solución no modifica artificialmente el checkpoint antiguo. Genera un nuevo
 dataset y un nuevo checkpoint CNN1D-VAE multimodal.
 
+
 ## Problema corregido
 
 El checkpoint histórico tiene este contrato:
@@ -37,6 +38,9 @@ Labels:
 ```
 
 Las predicciones del checkpoint histórico nunca se usan como labels.
+
+El label procede exclusivamente del `quality` recibido en el evento de
+metadata. Si el servicio no envía una calidad válida, la ventana no se usa.
 
 ## Flujo implementado
 
@@ -263,3 +267,29 @@ completos y muestras distribuidas entre las seis clases.
 El nuevo `best.pt` debe configurarse como checkpoint activo únicamente después
 de revisar sus métricas y confirmar que su contrato contiene audio + CNC y las
 seis clases esperadas.
+
+## Diagnóstico de la metadata real recibida
+
+En la última sesión observada, el servicio sí entregó audio y eventos, pero los
+eventos solo contenían estos valores numéricos de operación:
+
+```text
+SpindleSpeed.ProgrammedRpm
+SpindleSpeed.AdjustmentPercent
+SpindleSpeed.AdjustedRpm
+FeedRate.ProgrammedMmPerMin
+FeedRate.AdjustmentPercent
+FeedRate.AdjustedMmPerMin
+event.value, cuando el evento lo proporciona
+```
+
+También se observó `quality: 0` en todos los eventos revisados. No llegaron
+`ActualSpindleRpm`, `ActualFeedMmPerMin`, `SPowerPercent`, `WPowerPercent`,
+`ToolDiameterMm`, `ToolTeethCount` ni `ToolRemainingUsePercent`.
+
+Por ese motivo, la aplicación rechaza correctamente las muestras: no puede
+convertir cuatro valores observados en siete características sin cambiar el
+contrato del modelo o inventar datos. La adaptación temporal correcta debe ser
+un cambio explícito del esquema de entrada a las características reales del
+servicio, no una sustitución silenciosa ni valores por defecto.
+

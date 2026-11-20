@@ -15,6 +15,7 @@ import torch
 from Dataset.Preprocessing.cnc_features import CncFeatureNormalizer, FEATURE_NAMES
 from Dataset.Preprocessing import fourclass_data
 from device_support import resolve_device
+from Integration.rtsp_cnc_metadata import STREAM_FEATURE_NAMES, StreamFeatureNormalizer
 
 
 class WavClassifier:
@@ -41,16 +42,23 @@ class WavClassifier:
         self.valid_frames = state['valid_frames']
         self.input_length = fourclass_data.model_input_length(model_family)
         self.context_dim = int(state.get('context_dim', 0))
+        self.context_contract = state.get('context_contract', 'machining_context')
+        if self.context_contract not in {'machining_context', 'rtsp_stream'}:
+            raise ValueError(f'Unsupported CNC context contract: {self.context_contract}')
+        self.context_features = list(STREAM_FEATURE_NAMES if self.context_contract == 'rtsp_stream' else FEATURE_NAMES)
         self.context_embedding_dim = int(state.get('context_embedding_dim', 8))
         self.context_normalizer = None
         if self.context_dim:
             if model_family != 'CNN1D-VAE':
                 raise ValueError('CNC multimodal inference is supported only for CNN1D-VAE')
-            if self.context_dim != len(FEATURE_NAMES):
+            if self.context_dim != len(self.context_features):
                 raise ValueError('Checkpoint context_dim does not match the CNC feature schema')
             try:
-                self.context_normalizer = CncFeatureNormalizer.from_dict(
-                    state['context_normalizer']
+                normalizer_payload = state['context_normalizer']
+                self.context_normalizer = (
+                    StreamFeatureNormalizer.from_dict(normalizer_payload)
+                    if self.context_contract == 'rtsp_stream'
+                    else CncFeatureNormalizer.from_dict(normalizer_payload)
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 raise ValueError('Checkpoint lacks a valid CNC context normalizer') from exc
@@ -95,15 +103,16 @@ class WavClassifier:
             }
         self.label_metadata = {key: state[key] for key in ('label_semantics', 'synthetic_only') if key in state}
 
-    @staticmethod
-    def load_context(path):
-        """Load one raw MachiningContext JSON object for inference."""
+    def load_context(self, path):
+        """Load one raw context object for the checkpoint's input contract."""
         context_path = Path(path).expanduser().resolve()
         if not context_path.is_file():
             raise FileNotFoundError(f'CNC context JSON not found: {context_path}')
         payload = json.loads(context_path.read_text(encoding='utf-8-sig'))
         if not isinstance(payload, dict):
             raise ValueError('CNC context JSON must contain one object')
+        if self.context_contract == 'rtsp_stream':
+            return payload
         context = payload.get('context', payload)
         # Playback metadata may wrap the actual context one level deeper.
         if isinstance(context, dict) and isinstance(context.get('context'), dict):
@@ -120,7 +129,11 @@ class WavClassifier:
         if context is None:
             raise ValueError('CNC context is required by this multimodal checkpoint')
         if isinstance(context, dict):
-            values = self.context_normalizer.transform_context(context)
+            values = (
+                self.context_normalizer.transform_metadata(context)
+                if self.context_contract == 'rtsp_stream'
+                else self.context_normalizer.transform_context(context)
+            )
         else:
             values = np.asarray(context, dtype=np.float32)
             if values.shape != (self.context_dim,) or not np.isfinite(values).all():
@@ -172,10 +185,12 @@ class WavClassifier:
             'normalizer_refitted': False,
             'context_used_by_model': self.context_dim > 0,
             'context_schema_version': (
-                self.context_normalizer.to_dict()['context_schema_version']
+                self.context_normalizer.to_dict().get('context_schema_version',
+                                                      self.context_normalizer.to_dict().get('feature_schema_version'))
                 if self.context_normalizer is not None else None
             ),
-            'context_features': list(FEATURE_NAMES) if self.context_dim else [],
+            'context_contract': self.context_contract if self.context_dim else None,
+            'context_features': self.context_features if self.context_dim else [],
             **self.framing_metadata, **self.label_metadata,
         }
 
@@ -190,7 +205,7 @@ def run_prediction(StateClassifier, ModelConfig, model_family, argv=None):
     parser.add_argument('--checkpoint', type=Path, required=True)
     parser.add_argument('--wav', type=Path, required=True)
     parser.add_argument('--context', type=Path,
-                        help='JSON with one raw MachiningContext for multimodal CNN1D-VAE inference')
+                        help='JSON with one raw CNC context payload for multimodal CNN1D-VAE inference')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--threads', type=int, default=2)
     parser.add_argument('--device', choices=('auto', 'cpu', 'cuda'), default='auto',

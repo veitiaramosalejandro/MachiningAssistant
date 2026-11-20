@@ -118,8 +118,8 @@ class MachiningAnalysisService(rpc.MachiningAnalysisServicer):
                 channel_count=CHANNELS,
                 encoding=pb.PCM_ENCODING_S16LE_INTERLEAVED,
                 channel_descriptions=[
-                    pb.ChannelDescription(index=0, logical_name="L", numeric_unit="pcm_counts"),
-                    pb.ChannelDescription(index=1, logical_name="R", numeric_unit="pcm_counts"),
+                    pb.ChannelDescription(index=0, logical_name="sound", physical_quantity="sound", numeric_unit="pcm_counts"),
+                    pb.ChannelDescription(index=1, logical_name="vibration", physical_quantity="vibration", numeric_unit="pcm_counts"),
                 ],
             ),
             valid_frames=VALID_FRAMES,
