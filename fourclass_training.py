@@ -264,6 +264,8 @@ def _parser():
     parser.add_argument('--csv', type=Path, help='One combined samples.csv with a split column for train/val/test')
     parser.add_argument('--output-dir', type=Path, help='New empty run directory; default: runs/train/<timestamp>/classification/<model>')
     parser.add_argument('--resume', type=Path, help='Matching full classification checkpoint; reconstruction/MSM checkpoints are not accepted')
+    parser.add_argument('--allow-data-change', action='store_true',
+                        help='Allow a full-state resume when the new batch has different samples or WAV files')
     parser.add_argument('--cnc-context', type=Path,
                         help='JSON sidecar with one raw CNC context payload per sample_id')
     parser.add_argument('--cnc-contract', choices=('machining_context', 'rtsp_stream'),
@@ -291,6 +293,7 @@ def _parser():
 
 def _settings(args, previous):
     settings = {**DEFAULTS, 'data_dir': str(DEFAULT_DATA_DIR.resolve()), 'csv': None}
+    allow_data_change = bool(getattr(args, 'allow_data_change', False))
     if previous is not None:
         settings.update(previous['settings'])
     elif args.data_dir is None:
@@ -301,9 +304,10 @@ def _settings(args, previous):
             continue
         if key in ('data_dir', 'csv', 'cnc_context') and requested is not None:
             requested = str(Path(requested).expanduser().resolve())
-        if previous is not None and key == 'csv' and requested != settings['csv']:
+        if previous is not None and key == 'csv' and requested != settings['csv'] and not allow_data_change:
             raise ValueError('Resume CSV differs from the saved input. Start a new run to select a different CSV.')
-        if previous is not None and key in LOCKED_SETTINGS and requested != settings[key]:
+        if (previous is not None and key in LOCKED_SETTINGS and requested != settings[key]
+                and not (allow_data_change and key in ('data_dir', 'csv', 'cnc_context'))):
             raise ValueError(f'Resume setting mismatch for {key}: saved {settings[key]!r}, requested {requested!r}')
         settings[key] = requested
     settings['data_dir'] = str(Path(settings['data_dir']).expanduser().resolve())
@@ -379,10 +383,12 @@ def run_training(StateClassifier, ModelConfig, model_family, argv=None, *, valid
             raise ValueError(f'CNC context contains unknown sample_id: {unknown[0]}')
         context_dim = len(STREAM_FEATURE_NAMES) if context_contract == 'rtsp_stream' else len(FEATURE_NAMES)
     identity = data_identity(data_dir, rows, class_names, valid_frames)
+    data_identity_changed = False
     if checkpoint is not None:
         if checkpoint.get('class_names') != class_names or checkpoint.get('num_classes') != len(class_names):
             raise ValueError('Resume class names, order or count differs from labels.json')
-        if previous['data_identity'] != identity:
+        data_identity_changed = previous['data_identity'] != identity
+        if data_identity_changed and not args.allow_data_change:
             raise ValueError('Resume data identity changed: selected rows, labels, split membership or WAV files differ')
         config = ModelConfig(**checkpoint['model_config'])
         if config.sequence_length != input_length or config.input_channels != 2:
@@ -440,6 +446,7 @@ def run_training(StateClassifier, ModelConfig, model_family, argv=None, *, valid
         if 'label_semantics' in metadata:
             metadata['generation_label_semantics'] = metadata['label_semantics']
     metadata['label_mapping_authority'] = 'Current labels.json and split CSV label/label_index; generation-time labels are not training targets'
+    metadata['resume_data_identity_changed'] = data_identity_changed
     if model_family == 'LSTM-VAE':
         metadata.update(lstm_frame_size=config.frame_size, recurrent_steps=config.recurrent_steps,
                         lstm_frame_padding_frames=config.recurrent_steps*config.frame_size-input_length,

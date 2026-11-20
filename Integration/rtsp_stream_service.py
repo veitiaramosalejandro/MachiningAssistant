@@ -24,7 +24,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from Integration.grpc_service import _load_env_file
-from Integration.rtsp_cnc_metadata import StreamCncMetadata
+from Integration.rtsp_cnc_metadata import StreamCncMetadata, build_stream_feature_vector
 from Integration.simulate_monitor import load_engine
 from classification_streaming import StreamingClassifier
 
@@ -57,20 +57,49 @@ class MetadataTimeline:
                     self.messages.append(message)
             self.offset = handle.tell()
 
-    def context_at(self, start_s: float, end_s: float):
-        self._refresh()
-        candidates = []
+    def _latest_complete_recording(self) -> str | None:
+        recording_ids = []
+        seen = set()
         for message in self.messages:
-            if message.get("type") != "snapshot":
+            recording_id = message.get("recordingId")
+            if message.get("type") != "stream_start" or not recording_id or recording_id in seen:
                 continue
-            try:
-                timestamp = float(message.get("timestampSeconds"))
-            except (TypeError, ValueError):
-                continue
-            if timestamp <= start_s:
-                candidates.append((timestamp, message))
+            seen.add(recording_id)
+            recording_ids.append(str(recording_id))
+        for recording_id in reversed(recording_ids):
+            for message in self.messages:
+                if message.get("type") != "snapshot" or str(message.get("recordingId")) != recording_id:
+                    continue
+                try:
+                    build_stream_feature_vector(StreamCncMetadata.from_message(message).to_mapping())
+                    return recording_id
+                except (TypeError, ValueError):
+                    continue
+        return None
+
+    def context_at(self, start_s: float, end_s: float):
+        candidates = []
+        # The metadata receiver may still be writing the historical replay
+        # when the first audio window arrives. Give it a short bounded grace
+        # period instead of failing the entire multimodal listener.
+        for _ in range(20):
+            self._refresh()
+            recording_id = self._latest_complete_recording()
+            candidates = []
+            for message in self.messages:
+                if message.get("type") != "snapshot" or str(message.get("recordingId")) != recording_id:
+                    continue
+                try:
+                    timestamp = float(message.get("timestampSeconds"))
+                except (TypeError, ValueError):
+                    continue
+                if timestamp <= start_s:
+                    candidates.append((timestamp, message))
+            if candidates:
+                break
+            time.sleep(0.1)
         if not candidates:
-            raise RuntimeError(f"No x-machining-metadata snapshot is available for audio window [{start_s:.3f}, {end_s:.3f})")
+            raise RuntimeError(f"No complete RTSP CNC snapshot is available for audio window [{start_s:.3f}, {end_s:.3f})")
         _, message = max(candidates, key=lambda item: item[0])
         try:
             return StreamCncMetadata.from_message(message).to_mapping()

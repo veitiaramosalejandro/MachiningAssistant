@@ -26,7 +26,7 @@ import wave
 from persistence import health as storage_health
 from persistence import persist_import, persist_training
 from persistence import training_history as storage_training_history
-from Integration.rtsp_cnc_metadata import StreamCncMetadata
+from Integration.rtsp_cnc_metadata import StreamCncMetadata, build_stream_feature_vector
 from Integration.rtsp_training_dataset import build_rtsp_dataset
 
 
@@ -234,7 +234,7 @@ def start_rtsp_listener(payload: dict) -> dict:
     min_training_seconds = int(payload.get("min_training_seconds", (int(legacy_windows) * 5 if legacy_windows is not None else 5)))
     if not 5 <= min_training_seconds <= 600:
         raise ValueError("min_training_seconds debe estar entre 5 segundos y 600 segundos")
-    checkpoint = Path(setting("MACHINING_CHECKPOINT", "")).expanduser().resolve()
+    checkpoint = _latest_rtsp_checkpoint() or Path(setting("MACHINING_CHECKPOINT", "")).expanduser().resolve()
     if not checkpoint.is_file():
         raise FileNotFoundError("MACHINING_CHECKPOINT no está configurado o no existe")
     model = str(setting("MACHINING_MODEL", "cnn")).lower()
@@ -305,11 +305,33 @@ def _checkpoint_contract(checkpoint: Path) -> dict:
     state = torch.load(checkpoint, map_location="cpu", weights_only=True)
     return {
         "model_family": state.get("model_family"), "task": state.get("task"),
+        "context_contract": state.get("context_contract", ""),
         "context_dim": int(state.get("context_dim", 0)),
         "context_features": list(state.get("context_normalizer", {}).get("feature_names", []))
         if isinstance(state.get("context_normalizer"), dict) else [],
         "class_names": list(state.get("class_names", [])),
     }
+
+
+def _latest_rtsp_checkpoint() -> Path | None:
+    """Prefer the newest completed multimodal RTSP model for live capture."""
+    candidates = sorted(
+        (PROJECT_ROOT / "runs" / "rtsp" / "web_sessions").glob("*/training_run*/best.pt"),
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )
+    for candidate in candidates:
+        try:
+            contract = _checkpoint_contract(candidate)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            continue
+        if (contract.get("model_family") == "CNN1D-VAE"
+                and contract.get("task") == "classification"
+                and contract.get("context_contract") == "rtsp_stream"
+                and contract.get("context_dim") == 7
+                and len(contract.get("class_names", [])) == 6):
+            return candidate
+    return None
 
 
 def _read_json_lines(path: Path) -> list[dict]:
@@ -337,21 +359,50 @@ def _align_rtsp_training_windows(job: dict) -> dict:
     messages = _read_json_lines(Path(str(job.get("metadata_stream_output", ""))))
     session_metadata = _read_json_file(Path(str(job.get("metadata_output", ""))), {})
     occurred_at_utc = session_metadata.get("started_at_utc") if isinstance(session_metadata, dict) else None
-    # The metadata endpoint can replay several historical recordings when a
-    # client connects.  Playback timestamps restart at zero for each one, so
-    # selecting snapshots only by timestamp can attach a window to an
-    # unrelated recording.  The first stream_start is the active recording
-    # announced for this listener; keep its messages together for alignment.
-    stream_starts = [
-        item for item in messages
-        if item.get("type") == "stream_start" and item.get("recordingId")
-    ]
-    active_recording_id = stream_starts[0].get("recordingId") if stream_starts else None
-    scoped_messages = (
-        [item for item in messages if item.get("recordingId") == active_recording_id]
-        if active_recording_id
-        else messages
-    )
+    # The metadata endpoint replays several recordings when a client connects
+    # and timestampSeconds restarts at zero for each recording.  Keep the
+    # newest recording that has a complete CNC context; incomplete historical
+    # records must not block a valid current training batch.
+    timeline = []
+    seen_recordings = set()
+    for item in messages:
+        if item.get("type") != "stream_start" or not item.get("recordingId"):
+            continue
+        recording_id = str(item["recordingId"])
+        if recording_id in seen_recordings:
+            continue
+        seen_recordings.add(recording_id)
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        duration = item.get("durationSeconds")
+        if duration is None:
+            duration = metadata.get("DurationSeconds")
+        try:
+            duration = float(duration)
+        except (TypeError, ValueError):
+            duration = None
+        timeline.append({"recording_id": recording_id, "offset": 0.0, "duration": duration})
+    all_snapshots = [item for item in messages if item.get("type") == "snapshot"]
+    target = None
+    for candidate in reversed(timeline):
+        candidate_snapshots = [
+            item for item in all_snapshots
+            if item.get("recordingId") == candidate["recording_id"]
+        ]
+        for snapshot in candidate_snapshots:
+            try:
+                build_stream_feature_vector(StreamCncMetadata.from_message(snapshot).to_mapping())
+                target = candidate
+                break
+            except (TypeError, ValueError):
+                continue
+        if target is not None:
+            break
+    if target is not None:
+        active_recording_id = target["recording_id"]
+        scoped_messages = [item for item in messages if item.get("recordingId") == active_recording_id]
+    else:
+        active_recording_id = None
+        scoped_messages = messages
     snapshots = [item for item in scoped_messages if item.get("type") == "snapshot"]
     raw_events = [item for item in scoped_messages if item.get("type") == "event"]
     events = []
@@ -373,16 +424,26 @@ def _align_rtsp_training_windows(job: dict) -> dict:
             end = float(prediction["end_s"])
         except (KeyError, TypeError, ValueError):
             continue
+        if target is not None:
+            local_start = start
+            local_end = end
+            duration = target.get("duration")
+            if local_end <= 0 or (duration is not None and local_start >= float(duration)):
+                continue
+        else:
+            local_start, local_end = start, end
         window_events = []
         for item in events:
             try:
                 timestamp = float(item.get("timestampSeconds"))
             except (TypeError, ValueError):
                 continue
-            if start <= timestamp < end:
+            playback_timestamp = timestamp
+            if start <= playback_timestamp < end:
                 event = item.get("event") if isinstance(item.get("event"), dict) else {}
                 window_events.append({
-                    "timestamp_seconds": timestamp,
+                    "timestamp_seconds": playback_timestamp,
+                    "recording_id": item.get("recordingId"),
                     "occurrence": event.get("occurrence"),
                     "event": event,
                 })
@@ -390,7 +451,7 @@ def _align_rtsp_training_windows(job: dict) -> dict:
             continue
         previous = [
             item for item in snapshots
-            if isinstance(item.get("timestampSeconds"), (int, float)) and item["timestampSeconds"] <= start
+            if isinstance(item.get("timestampSeconds"), (int, float)) and item["timestampSeconds"] <= local_start
         ]
         raw_snapshot = previous[-1] if previous else None
         context = None
@@ -411,6 +472,8 @@ def _align_rtsp_training_windows(job: dict) -> dict:
             "audio_wav_file": prediction.get("audio_window_file"),
             "events": window_events, "context": context,
             "context_error": context_error,
+            "recording_id": active_recording_id,
+            "recording_playback_offset_seconds": target["offset"] if target is not None else 0.0,
         })
     aligned_path = Path(str(job.get("aligned_training_output", "")))
     if aligned_path:
@@ -624,6 +687,29 @@ def _next_rtsp_training_paths(session_dir: Path) -> tuple[Path, Path, str]:
     raise RuntimeError("No hay un directorio disponible para otro intento de entrenamiento RTSP")
 
 
+RTSP_EPOCHS_PER_BATCH = 60
+
+
+def _previous_rtsp_checkpoint(session_dir: Path, attempt_suffix: str) -> Path | None:
+    """Resolve the previous batch checkpoint for a continuation run."""
+    if not attempt_suffix:
+        return None
+    attempt_number = int(attempt_suffix.rsplit("_", 1)[-1])
+    previous_suffix = "" if attempt_number == 2 else f"_attempt_{attempt_number - 1:02d}"
+    checkpoint = session_dir / f"training_run{previous_suffix}" / "last.pt"
+    return checkpoint if checkpoint.is_file() else None
+
+
+def _checkpoint_completed_epoch(checkpoint: Path) -> int:
+    import torch
+
+    value = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    training_state = value.get("training_state")
+    if not isinstance(training_state, dict):
+        raise ValueError(f"El checkpoint RTSP no permite continuar: {checkpoint}")
+    return int(training_state.get("completed_epoch", 0))
+
+
 def request_rtsp_training(payload: dict) -> dict:
     listener_id = str(payload.get("listener_id", ""))
     rtsp_listener_status(listener_id)
@@ -635,7 +721,11 @@ def request_rtsp_training(payload: dict) -> dict:
     if int(job.get("metadata_events", 0)) == 0 and int(job.get("metadata_snapshots", 0)) == 0:
         blockers.append("No se han recibido snapshots ni eventos x-machining-metadata")
     session_dir = Path(str(job.get("aligned_training_output", ""))).parent
-    dataset_dir = session_dir / "training_dataset"
+    training_output, training_log, attempt_suffix = _next_rtsp_training_paths(session_dir)
+    dataset_dir = session_dir / ("training_dataset" if not attempt_suffix else f"training_dataset{attempt_suffix}")
+    resume_path = _previous_rtsp_checkpoint(session_dir, attempt_suffix)
+    completed_epoch = _checkpoint_completed_epoch(resume_path) if resume_path is not None else 0
+    target_epochs = completed_epoch + RTSP_EPOCHS_PER_BATCH
     try:
         dataset_report = build_rtsp_dataset(
             session_dir=session_dir,
@@ -671,20 +761,18 @@ def request_rtsp_training(payload: dict) -> dict:
             report.update({"accepted": True, "status": "running", "training_id": job.get("training_id"),
                            "training_output": job.get("training_output"), "training_log": job.get("training_log")})
         else:
-            epochs = int(payload.get("epochs", 20))
-            if not 1 <= epochs <= 1000:
-                raise ValueError("epochs debe estar entre 1 y 1000")
             device = str(payload.get("device", "auto"))
             if device not in {"auto", "cpu", "cuda"}:
                 raise ValueError("device no está permitido")
-            training_output, training_log, attempt_suffix = _next_rtsp_training_paths(session_dir)
             training_id = f"{listener_id}_rtsp_cnn{attempt_suffix}"
             command = [str(PYTHON), str(PROJECT_ROOT / "CNN1D-VAE" / "train_fourclass.py"),
                        "--data-dir", str(dataset_dir), "--csv", str(dataset_dir / "samples.csv"),
                        "--cnc-context", str(dataset_dir / "contexts.json"),
                        "--cnc-contract", "rtsp_stream",
-                       "--output-dir", str(training_output), "--epochs", str(epochs),
+                       "--output-dir", str(training_output), "--epochs", str(target_epochs),
                        "--device", device]
+            if resume_path is not None:
+                command.extend(["--resume", str(resume_path), "--allow-data-change"])
             log_handle = training_log.open("w", encoding="utf-8")
             try:
                 training_process = subprocess.Popen(command, cwd=PROJECT_ROOT, env=os.environ.copy(),
@@ -696,7 +784,8 @@ def request_rtsp_training(payload: dict) -> dict:
                         "training_log": str(training_log)})
             report.update({"accepted": True, "status": "running", "training_id": training_id,
                            "training_output": str(training_output), "training_log": str(training_log),
-                           "command": command})
+                           "command": command, "epochs_per_batch": RTSP_EPOCHS_PER_BATCH,
+                           "target_epoch": target_epochs, "resumed_from": str(resume_path) if resume_path else None})
     request_path = Path(str(job.get("training_request_output", "")))
     if request_path:
         request_path.write_bytes(json_bytes(report))
