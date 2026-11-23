@@ -17,11 +17,14 @@ from __future__ import annotations
 import asyncio
 import argparse
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 import inspect
 import json
+import math
 from pathlib import Path
 import ssl
 import sys
+import time
 from typing import Any, Final, TypeAlias
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -37,6 +40,15 @@ DEFAULT_PRIVATE_KEY: Final = PROJECT_ROOT / "certs" / "machining-assistant-analy
 Payload: TypeAlias = dict[str, Any]
 HandlerResult: TypeAlias = str | Payload
 MessageHandler: TypeAlias = Callable[[Payload], HandlerResult | Awaitable[HandlerResult]]
+
+
+@dataclass
+class _AnalysisSession:
+    start: Payload
+    state: str
+    lease_deadline: float
+    sequence: int = 0
+    last_data: str | None = None
 
 
 def _require_object(value: Any, name: str) -> Payload:
@@ -85,7 +97,6 @@ async def read_message(reader: asyncio.StreamReader) -> dict[str, Any]:
     raw = await reader.readexactly(size)
     try:
         message = json.loads(raw.decode("utf-8"))
-        print(message)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("invalid UTF-8 JSON envelope") from exc
     message = _require_object(message, "message")
@@ -101,6 +112,11 @@ async def read_message(reader: asyncio.StreamReader) -> dict[str, Any]:
 
 def _validate_start(payload: Payload) -> Payload:
     result = dict(payload)
+    _reject_unknown_fields(
+        result,
+        {"sessionId", "url", "username", "password", "machineId", "origin", "executionId", "leaseSeconds", "waitForAudio"},
+        "analysis.start",
+    )
     result["sessionId"] = _uuid(result.get("sessionId"), "sessionId")
     url = result.get("url")
     if not isinstance(url, str) or len(url) > 4096:
@@ -119,30 +135,50 @@ def _validate_start(payload: Payload) -> Payload:
     if isinstance(lease, bool) or not isinstance(lease, int) or not 5 <= lease <= 60:
         raise ValueError("leaseSeconds must be between 5 and 60")
     result["leaseSeconds"] = lease
+    wait_for_audio = result.get("waitForAudio", False)
+    if not isinstance(wait_for_audio, bool):
+        raise ValueError("waitForAudio must be a boolean")
+    result["waitForAudio"] = wait_for_audio
     if result.get("machineId") is not None:
         result["machineId"] = _uuid(result["machineId"], "machineId", allow_empty=True)
+    if result.get("executionId") is not None and not isinstance(result["executionId"], str):
+        raise ValueError("executionId must be a string or null")
     return result
 
 
-def _validate_session_payload(payload: Payload, field: str = "sessionId") -> Payload:
+def _validate_session_payload(
+    payload: Payload,
+    field: str = "sessionId",
+    allowed_fields: set[str] | None = None,
+) -> Payload:
     result = dict(payload)
+    _reject_unknown_fields(result, allowed_fields or {field}, "analysis session command")
     result[field] = _uuid(result.get(field), field)
     return result
 
 
 def _validate_data(payload: Payload) -> Payload:
-    result = _validate_session_payload(payload)
+    result = _validate_session_payload(
+        payload,
+        allowed_fields={"sessionId", "sequence", "kind", "data", "positionSeconds"},
+    )
     sequence = result.get("sequence")
     if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
         raise ValueError("sequence must be a positive integer")
     if result.get("kind") not in {"context", "event", "playback"}:
         raise ValueError("kind is invalid")
     position = result.get("positionSeconds", 0)
-    if isinstance(position, bool) or not isinstance(position, (int, float)) or position < 0:
+    if isinstance(position, bool) or not isinstance(position, (int, float)) or not math.isfinite(position) or position < 0:
         raise ValueError("positionSeconds must be non-negative")
     if "data" not in result:
         raise ValueError("data is required")
     return result
+
+
+def _reject_unknown_fields(payload: Payload, allowed: set[str], name: str) -> None:
+    unknown = sorted(set(payload) - allowed)
+    if unknown:
+        raise ValueError(f"{name} contains unsupported fields: {', '.join(unknown)}")
 
 
 class MachiningMonitorSocketServer:
@@ -182,6 +218,8 @@ class MachiningMonitorSocketServer:
         self._logger = logger or (lambda message: None)
         self._server: asyncio.AbstractServer | None = None
         self._connections: set[asyncio.Task[None]] = set()
+        self._sessions: dict[str, _AnalysisSession] = {}
+        self._ended_sessions: set[str] = set()
 
     def _ssl_context(self) -> ssl.SSLContext:
         if not self.certificate_file.is_file():
@@ -221,6 +259,8 @@ class MachiningMonitorSocketServer:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        self._sessions.clear()
+        self._ended_sessions.clear()
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         task = asyncio.current_task()
@@ -254,26 +294,27 @@ class MachiningMonitorSocketServer:
                 self._connections.discard(task)
 
     async def _dispatch(self, message_type: str, payload: Payload) -> Payload:
+        await self._expire_sessions()
         if message_type == "analysis.ping":
             return {"sessionId": str(UUID(int=0)), "state": "ready"}
         if message_type == "analysis.start":
             payload = _validate_start(payload)
+            return await self._start_session(payload)
         elif message_type == "analysis.data":
             payload = _validate_data(payload)
+            return await self._data_session(payload)
         elif message_type in {"analysis.stop", "analysis.heartbeat"}:
             payload = _validate_session_payload(payload)
+            if message_type == "analysis.stop":
+                return await self._stop_session(payload)
+            return await self._heartbeat_session(payload)
         else:
             raise ValueError(f"unknown analyzer command: {message_type}")
 
+    async def _call_handler(self, message_type: str, payload: Payload, default_state: str) -> Payload:
         handler = self._handlers[message_type]
         if handler is None:
-            state = {
-                "analysis.start": "accepted",
-                "analysis.data": "dataAccepted",
-                "analysis.stop": "stopped",
-                "analysis.heartbeat": "alive",
-            }[message_type]
-            return {"sessionId": payload["sessionId"], "state": state}
+            return {"sessionId": payload["sessionId"], "state": default_state}
         result = handler(payload)
         if inspect.isawaitable(result):
             result = await result
@@ -285,6 +326,69 @@ class MachiningMonitorSocketServer:
         if not isinstance(response.get("state"), str) or not response["state"]:
             raise ValueError("handler result must contain a non-empty state")
         return response
+
+    async def _start_session(self, payload: Payload) -> Payload:
+        session_id = payload["sessionId"]
+        existing = self._sessions.get(session_id)
+        if existing is not None:
+            if existing.start != payload:
+                raise ValueError("session identity conflict")
+            existing.lease_deadline = time.monotonic() + payload["leaseSeconds"]
+            return {"sessionId": session_id, "state": existing.state}
+        if session_id in self._ended_sessions:
+            raise ValueError("session already ended; create a new session")
+        if len(self._sessions) >= 128:
+            raise ValueError("analysis session limit reached")
+        response = await self._call_handler("analysis.start", payload, "accepted")
+        state = response["state"]
+        self._sessions[session_id] = _AnalysisSession(
+            start=dict(payload),
+            state=state,
+            lease_deadline=time.monotonic() + payload["leaseSeconds"],
+        )
+        return response
+
+    async def _data_session(self, payload: Payload) -> Payload:
+        session_id = payload["sessionId"]
+        session = self._sessions.get(session_id)
+        if session is None:
+            raise ValueError("unknown session")
+        serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        sequence = payload["sequence"]
+        if sequence < session.sequence or (sequence == session.sequence and serialized != session.last_data):
+            raise ValueError("out of order or conflicting data")
+        if sequence > session.sequence:
+            session.sequence = sequence
+            session.last_data = serialized
+        session.lease_deadline = time.monotonic() + session.start["leaseSeconds"]
+        return await self._call_handler("analysis.data", payload, "dataAccepted")
+
+    async def _heartbeat_session(self, payload: Payload) -> Payload:
+        session = self._sessions.get(payload["sessionId"])
+        if session is None:
+            raise ValueError("unknown session")
+        session.lease_deadline = time.monotonic() + session.start["leaseSeconds"]
+        return await self._call_handler("analysis.heartbeat", payload, "alive")
+
+    async def _stop_session(self, payload: Payload) -> Payload:
+        session_id = payload["sessionId"]
+        response = await self._call_handler("analysis.stop", payload, "stopped")
+        self._sessions.pop(session_id, None)
+        self._ended_sessions.add(session_id)
+        if len(self._ended_sessions) > 10000:
+            self._ended_sessions.clear()
+        return response
+
+    async def _expire_sessions(self) -> None:
+        now = time.monotonic()
+        expired = [session_id for session_id, session in self._sessions.items() if session.lease_deadline <= now]
+        for session_id in expired:
+            self._sessions.pop(session_id, None)
+            self._ended_sessions.add(session_id)
+            try:
+                await self._call_handler("analysis.stop", {"sessionId": session_id}, "stopped")
+            except Exception as exc:
+                self._logger(f"Analyzer session {session_id} expired: {exc}")
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:

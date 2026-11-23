@@ -155,6 +155,9 @@ def validate_rtsp_training_source(payload: dict) -> dict:
         raise ValueError("probe_timeout_seconds no está entre las opciones permitidas")
     command = [
         FFPROBE, "-hide_banner", "-v", "error", "-rtsp_transport", "tcp",
+        # Do not leave the RTSP socket blocked until the outer subprocess
+        # timeout. FFmpeg expects this value in microseconds.
+        "-rw_timeout", str(timeout_s * 1_000_000),
         "-show_streams", "-show_format", "-of", "json", source,
     ]
     started = time.time()
@@ -1737,7 +1740,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
-        self.wfile.write(payload)
+        try:
+            self.wfile.write(payload)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            # The browser may cancel the request while ffprobe is timing out.
+            # There is no response left to send, so avoid a noisy server trace.
+            return
 
     def read_json(self) -> dict:
         length = int(self.headers.get("Content-Length", "0"))
