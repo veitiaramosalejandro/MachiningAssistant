@@ -2,6 +2,9 @@ import React, {useCallback, useEffect, useState} from 'react';
 import type {Dispatch, ReactNode, SetStateAction} from 'react';
 import {createRoot} from 'react-dom/client';
 import LoadingOverlay from './components/LoadingOverlay';
+import ConfigurationView from './components/ConfigurationView';
+import StreamView from './components/StreamView';
+import TrainingView from './components/TrainingView';
 import './styles.css';
 import './loading.css';
 
@@ -587,9 +590,9 @@ function App() {
                 <button className={tab === key ? 'tab active' : 'tab'} onClick={() => setTab(key)}
                         key={key}>{label}</button>)}</nav>
             {tab === 'config' &&
-                <Configuration {...{config, setConfig, listenerId, t, log, setLog, busy}} onValidate={validate}
+                <ConfigurationView {...{config, setConfig, listenerId, t, log, setLog, busy}} onValidate={validate}
                                onConnect={connect} onDisconnect={disconnect} onTrain={train}/>}{tab === 'stream' &&
-            <Stream listener={listener} t={t}/>}{tab === 'training' && <Training listener={listener} t={t}/>} {busy && <LoadingOverlay message={busy} language={language}/>}</section>
+            <StreamView listener={listener} t={t}/>}{tab === 'training' && <TrainingView listener={listener} t={t}/>} {busy && <LoadingOverlay message={busy} language={language}/>}</section>
     </main>;
 }
 
