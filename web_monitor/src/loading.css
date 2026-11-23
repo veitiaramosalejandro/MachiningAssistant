@@ -1,0 +1,5 @@
+.loading-overlay{position:fixed;inset:0;z-index:20;display:grid;place-items:center;background:rgba(3,15,21,.68);backdrop-filter:blur(3px)}
+.loading-card{display:flex;align-items:center;gap:16px;min-width:min(430px,calc(100vw - 36px));padding:22px 24px;border:1px solid #2c7884;border-radius:15px;background:linear-gradient(135deg,#123f4c,#061923);box-shadow:0 22px 70px #0008;color:#f4ffff}
+.loading-card strong,.loading-card small{display:block}.loading-card strong{font-size:15px}.loading-card small{margin-top:5px;color:#9bcfd5;font-size:12px}
+.spinner{width:30px;height:30px;flex:none;border:3px solid #2c6570;border-top-color:#36e0c2;border-right-color:#36a9da;border-radius:50%;animation:machining-spin .8s linear infinite}
+@keyframes machining-spin{to{transform:rotate(360deg)}}

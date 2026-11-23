@@ -1,7 +1,9 @@
 import React, {useCallback, useEffect, useState} from 'react';
 import type {Dispatch, ReactNode, SetStateAction} from 'react';
 import {createRoot} from 'react-dom/client';
+import LoadingOverlay from './components/LoadingOverlay';
 import './styles.css';
+import './loading.css';
 
 type Language = 'es' | 'en' | 'pt-PT';
 type Labels = Record<string, string>;
@@ -67,6 +69,7 @@ interface ConfigurationProps {
     onConnect: Handler;
     onDisconnect: Handler;
     onTrain: Handler
+    busy: string | null;
 }
 
 interface StreamProps {
@@ -358,7 +361,7 @@ function EventTable({rows, t}: EventTableProps) {
     </div>;
 }
 
-function Configuration({config, setConfig, listenerId, t, log, setLog, onValidate, onConnect, onDisconnect, onTrain}: ConfigurationProps) {
+function Configuration({config, setConfig, listenerId, t, log, setLog, onValidate, onConnect, onDisconnect, onTrain, busy}: ConfigurationProps) {
     const change = (key: keyof Config, value: Config[keyof Config]) => setConfig((current) => ({...current, [key]: value}));
     const save = () => {
         const safe = {...config, rtsp_password: undefined};
@@ -401,12 +404,12 @@ function Configuration({config, setConfig, listenerId, t, log, setLog, onValidat
         <div className="box"><h2>{t.recommendedTitle}</h2><p>{t.transport}</p><p>{t.first}</p></div>
         <p className="fixed">{t.modelInput}</p>
         <div className="buttons">
-            <button onClick={save}>{t.save}</button>
-            <button onClick={reset}>{t.reset}</button>
-            <button className="primary" onClick={onValidate}>{t.validate}</button>
-            <button className="primary" disabled={Boolean(listenerId)} onClick={onConnect}>{t.connect}</button>
-            <button disabled={!listenerId} onClick={onDisconnect}>{t.disconnect}</button>
-            <button disabled={!listenerId} onClick={onTrain}>{t.train}</button>
+            <button disabled={Boolean(busy)} onClick={save}>{t.save}</button>
+            <button disabled={Boolean(busy)} onClick={reset}>{t.reset}</button>
+            <button className="primary" disabled={Boolean(busy)} onClick={onValidate}>{t.validate}</button>
+            <button className="primary" disabled={Boolean(listenerId) || Boolean(busy)} onClick={onConnect}>{t.connect}</button>
+            <button disabled={!listenerId || Boolean(busy)} onClick={onDisconnect}>{t.disconnect}</button>
+            <button disabled={!listenerId || Boolean(busy)} onClick={onTrain}>{t.train}</button>
         </div>
         <pre className="log">{log}</pre>
     </section>;
@@ -506,6 +509,7 @@ function App() {
     const [listener, setListener] = useState<ListenerData | null>(null);
     const [listenerId, setListenerId] = useState<string | null>(null);
     const [log, setLog] = useState(t.ready);
+    const [busy, setBusy] = useState<string | null>(null);
     const refresh = useCallback(async (id: string | null) => {
         if (!id) return;
         try {
@@ -529,7 +533,8 @@ function App() {
         const timer = setInterval(() => refresh(listenerId), 3000);
         return () => clearInterval(timer);
     }, [listenerId, refresh]);
-    const start = async (path: string, body: JsonObject): Promise<ListenerData | null> => {
+    const start = async (path: string, body: JsonObject, operation: string): Promise<ListenerData | null> => {
+        setBusy(operation);
         try {
             const data = await post<ListenerData>(path, body);
             setListener(data);
@@ -539,19 +544,29 @@ function App() {
         } catch (error) {
             setLog(`Operación fallida: ${error instanceof Error ? error.message : String(error)}`);
             return null;
+        } finally {
+            setBusy(null);
         }
     };
-    const validate = () => start('/api/rtsp-training/validate', config).then(() => setTab('stream'));
-    const connect = () => start('/api/rtsp-training/listener/start', config).then(() => setTab('stream'));
+    const operationText = (key: 'validate' | 'connect' | 'disconnect' | 'train'): string => {
+        const messages: Record<Language, Record<string, string>> = {
+            es: {validate: 'Validando audio y metadata…', connect: 'Conectando y escuchando RTSP…', disconnect: 'Desconectando el listener…', train: 'Generando dataset y entrenando CNN1D-VAE…'},
+            en: {validate: 'Validating audio and metadata…', connect: 'Connecting and listening to RTSP…', disconnect: 'Disconnecting listener…', train: 'Building dataset and training CNN1D-VAE…'},
+            'pt-PT': {validate: 'A validar áudio e metadados…', connect: 'A ligar e escutar RTSP…', disconnect: 'A desligar o listener…', train: 'A gerar o lote e a treinar CNN1D-VAE…'}
+        };
+        return messages[language][key];
+    };
+    const validate = () => start('/api/rtsp-training/validate', config, operationText('validate')).then((result) => { if (result) setTab('stream'); });
+    const connect = () => start('/api/rtsp-training/listener/start', config, operationText('connect')).then((result) => { if (result) setTab('stream'); });
     const disconnect = async () => {
-        await start('/api/rtsp-training/listener/stop', {listener_id: listenerId});
+        await start('/api/rtsp-training/listener/stop', {listener_id: listenerId}, operationText('disconnect'));
         setListenerId(null);
     };
     const train = () => start('/api/rtsp-training/train', {
         listener_id: listenerId,
         epochs: 60,
         device: 'auto'
-    }).then(() => setTab('training'));
+    }, operationText('train')).then((result) => { if (result) setTab('training'); });
     const changeLanguage = (value: string) => {
         if (!(value in TEXT)) return;
         const selected = value as Language;
@@ -572,9 +587,9 @@ function App() {
                 <button className={tab === key ? 'tab active' : 'tab'} onClick={() => setTab(key)}
                         key={key}>{label}</button>)}</nav>
             {tab === 'config' &&
-                <Configuration {...{config, setConfig, listenerId, t, log, setLog}} onValidate={validate}
+                <Configuration {...{config, setConfig, listenerId, t, log, setLog, busy}} onValidate={validate}
                                onConnect={connect} onDisconnect={disconnect} onTrain={train}/>}{tab === 'stream' &&
-            <Stream listener={listener} t={t}/>}{tab === 'training' && <Training listener={listener} t={t}/>}</section>
+            <Stream listener={listener} t={t}/>}{tab === 'training' && <Training listener={listener} t={t}/>} {busy && <LoadingOverlay message={busy} language={language}/>}</section>
     </main>;
 }
 
