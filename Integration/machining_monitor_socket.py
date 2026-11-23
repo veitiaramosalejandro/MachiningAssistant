@@ -22,17 +22,23 @@ import inspect
 import json
 import math
 from pathlib import Path
+import subprocess
 import ssl
 import sys
 import time
 from typing import Any, Final, TypeAlias
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import UUID
 
 
 MAXIMUM_FRAME_BYTES: Final = 1024 * 1024
 PROTOCOL_VERSION: Final = 1
 ACCEPTED_MESSAGE_TYPE: Final = "analysis.accepted"
+MODEL_SAMPLE_RATE_HZ: Final = 44100
+MODEL_CHANNELS: Final = 2
+MODEL_SAMPLE_BYTES: Final = 2
+DEFAULT_AUDIO_CHUNK_MS: Final = 20
+DEFAULT_FFMPEG: Final = "ffmpeg"
 PROJECT_ROOT: Final = Path(__file__).resolve().parents[1]
 DEFAULT_CERTIFICATE: Final = PROJECT_ROOT / "certs" / "machining-assistant-analyzer.crt"
 DEFAULT_PRIVATE_KEY: Final = PROJECT_ROOT / "certs" / "machining-assistant-analyzer.key"
@@ -40,6 +46,167 @@ DEFAULT_PRIVATE_KEY: Final = PROJECT_ROOT / "certs" / "machining-assistant-analy
 Payload: TypeAlias = dict[str, Any]
 HandlerResult: TypeAlias = str | Payload
 MessageHandler: TypeAlias = Callable[[Payload], HandlerResult | Awaitable[HandlerResult]]
+AudioChunkHandler: TypeAlias = Callable[[Payload], None | Awaitable[None]]
+
+
+def _audio_source_url(url: str, username: str, password: str) -> str:
+    """Add credentials only to the child FFmpeg command, never to logs."""
+    parsed = urlsplit(url)
+    host = parsed.hostname or ""
+    if parsed.port:
+        host += f":{parsed.port}"
+    user_info = f"{quote(username, safe='')}:{quote(password, safe='')}@"
+    return urlunsplit((parsed.scheme, user_info + host, parsed.path, parsed.query, ""))
+
+
+def _public_audio_url(url: str) -> str:
+    parsed = urlsplit(url)
+    host = parsed.hostname or "<invalid-host>"
+    if parsed.port:
+        host += f":{parsed.port}"
+    return urlunsplit((parsed.scheme, host, parsed.path, parsed.query, ""))
+
+
+class _AudioStreamWorker:
+    """Read one RTSP source and emit model-compatible PCM chunks."""
+
+    def __init__(
+        self,
+        *,
+        session_id: str,
+        url: str,
+        username: str,
+        password: str,
+        ffmpeg: str,
+        transport: str,
+        chunk_ms: int,
+        context_provider: Callable[[], Payload],
+        on_audio: AudioChunkHandler | None,
+        logger: Callable[[str], None],
+    ) -> None:
+        if transport not in {"tcp", "udp"}:
+            raise ValueError("audio transport must be tcp or udp")
+        if chunk_ms <= 0:
+            raise ValueError("audio chunk duration must be positive")
+        self.session_id = session_id
+        self.url = url
+        self.username = username
+        self.password = password
+        self.ffmpeg = ffmpeg
+        self.transport = transport
+        self.chunk_frames = max(1, round(MODEL_SAMPLE_RATE_HZ * chunk_ms / 1000))
+        self.chunk_bytes = self.chunk_frames * MODEL_CHANNELS * MODEL_SAMPLE_BYTES
+        self.context_provider = context_provider
+        self.on_audio = on_audio
+        self.logger = logger
+        self.ready = asyncio.Event()
+        self._stop = asyncio.Event()
+        self._task: asyncio.Task[None] | None = None
+        self._process: asyncio.subprocess.Process | None = None
+        self.frames_emitted = 0
+        self._receiving = False
+
+    @property
+    def is_receiving(self) -> bool:
+        return self._receiving and not self._stop.is_set()
+
+    async def start(self) -> None:
+        if self._task is not None:
+            raise RuntimeError("audio worker is already running")
+        self._task = asyncio.create_task(self._run(), name=f"rtsp-audio-{self.session_id}")
+
+    async def wait_ready(self, timeout: float = 3.0) -> None:
+        await asyncio.wait_for(self.ready.wait(), timeout=timeout)
+
+    async def stop(self) -> None:
+        self._stop.set()
+        process = self._process
+        if process is not None and process.returncode is None:
+            process.terminate()
+        if self._task is not None:
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+
+    async def _run(self) -> None:
+        while not self._stop.is_set():
+            process: asyncio.subprocess.Process | None = None
+            stderr_task: asyncio.Task[bytes] | None = None
+            try:
+                command = [
+                    self.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
+                    "-rtsp_transport", self.transport, "-timeout", "2000000",
+                    "-probesize", "32768", "-analyzeduration", "100000",
+                    "-i", _audio_source_url(self.url, self.username, self.password),
+                    "-vn", "-f", "s16le", "-acodec", "pcm_s16le",
+                    "-ar", str(MODEL_SAMPLE_RATE_HZ), "-ac", str(MODEL_CHANNELS), "pipe:1",
+                ]
+                process = await asyncio.create_subprocess_exec(
+                    *command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                self._process = process
+                assert process.stdout is not None
+                assert process.stderr is not None
+                stderr_task = asyncio.create_task(process.stderr.read())
+                pending = b""
+                while not self._stop.is_set():
+                    chunk = await process.stdout.read(self.chunk_bytes)
+                    if not chunk:
+                        break
+                    pending += chunk
+                    complete = len(pending) - (len(pending) % (MODEL_CHANNELS * MODEL_SAMPLE_BYTES))
+                    while complete >= self.chunk_bytes:
+                        pcm = pending[:self.chunk_bytes]
+                        pending = pending[self.chunk_bytes:]
+                        first_frame = self.frames_emitted
+                        self.frames_emitted += self.chunk_frames
+                        self._receiving = True
+                        self.ready.set()
+                        if self.on_audio is not None:
+                            result = self.on_audio({
+                                "sessionId": self.session_id,
+                                "pcm16le": pcm,
+                                "sampleRateHz": MODEL_SAMPLE_RATE_HZ,
+                                "channelCount": MODEL_CHANNELS,
+                                "firstFrame": first_frame,
+                                "positionSeconds": first_frame / MODEL_SAMPLE_RATE_HZ,
+                                "context": self.context_provider(),
+                            })
+                            if inspect.isawaitable(result):
+                                await result
+                        complete = len(pending) - (len(pending) % (MODEL_CHANNELS * MODEL_SAMPLE_BYTES))
+                await process.wait()
+                error = (await stderr_task).decode("utf-8", errors="replace").strip() if stderr_task else ""
+                if error and not self._stop.is_set():
+                    self.logger(
+                        f"RTSP audio session {self.session_id} ended for {_public_audio_url(self.url)}: "
+                        f"{error.replace(_audio_source_url(self.url, self.username, self.password), _public_audio_url(self.url))[-500:]}"
+                    )
+            except asyncio.CancelledError:
+                raise
+            except (OSError, RuntimeError) as exc:
+                if not self._stop.is_set():
+                    self.logger(f"RTSP audio session {self.session_id} unavailable: {type(exc).__name__}")
+            except Exception as exc:
+                if not self._stop.is_set():
+                    self.logger(f"RTSP audio session {self.session_id} failed: {type(exc).__name__}")
+            finally:
+                self._receiving = False
+                self._process = None
+                if process is not None and process.returncode is None:
+                    process.kill()
+                    await process.wait()
+                if stderr_task is not None and not stderr_task.done():
+                    stderr_task.cancel()
+            if not self._stop.is_set():
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=0.25)
+                except asyncio.TimeoutError:
+                    pass
 
 
 @dataclass
@@ -49,6 +216,9 @@ class _AnalysisSession:
     lease_deadline: float
     sequence: int = 0
     last_data: str | None = None
+    latest_context: Payload | None = None
+    latest_message: Payload | None = None
+    audio: _AudioStreamWorker | None = None
 
 
 def _require_object(value: Any, name: str) -> Payload:
@@ -122,6 +292,10 @@ def _validate_start(payload: Payload) -> Payload:
     if not isinstance(url, str) or len(url) > 4096:
         raise ValueError("url must be a valid RTSP URL")
     parsed = urlsplit(url)
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise ValueError("url contains an invalid port") from exc
     if parsed.scheme.lower() not in {"rtsp", "rtsps"} or not parsed.hostname or parsed.username or parsed.password:
         raise ValueError("url must be RTSP/RTSPS without embedded credentials")
     if not isinstance(result.get("username"), str) or not isinstance(result.get("password"), str):
@@ -201,6 +375,10 @@ class MachiningMonitorSocketServer:
         on_data: MessageHandler | None = None,
         on_stop: MessageHandler | None = None,
         on_heartbeat: MessageHandler | None = None,
+        on_audio: AudioChunkHandler | None = None,
+        ffmpeg: str = DEFAULT_FFMPEG,
+        audio_transport: str = "tcp",
+        audio_chunk_ms: int = DEFAULT_AUDIO_CHUNK_MS,
         logger: Callable[[str], None] | None = None,
     ) -> None:
         if not 1 <= port <= 65535:
@@ -215,6 +393,10 @@ class MachiningMonitorSocketServer:
             "analysis.stop": on_stop,
             "analysis.heartbeat": on_heartbeat,
         }
+        self._on_audio = on_audio
+        self._ffmpeg = ffmpeg
+        self._audio_transport = audio_transport
+        self._audio_chunk_ms = audio_chunk_ms
         self._logger = logger or (lambda message: None)
         self._server: asyncio.AbstractServer | None = None
         self._connections: set[asyncio.Task[None]] = set()
@@ -259,6 +441,9 @@ class MachiningMonitorSocketServer:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        for session in tuple(self._sessions.values()):
+            if session.audio is not None:
+                await session.audio.stop()
         self._sessions.clear()
         self._ended_sessions.clear()
 
@@ -341,11 +526,33 @@ class MachiningMonitorSocketServer:
             raise ValueError("analysis session limit reached")
         response = await self._call_handler("analysis.start", payload, "accepted")
         state = response["state"]
-        self._sessions[session_id] = _AnalysisSession(
+        session = _AnalysisSession(
             start=dict(payload),
             state=state,
             lease_deadline=time.monotonic() + payload["leaseSeconds"],
         )
+        session.audio = _AudioStreamWorker(
+            session_id=session_id,
+            url=payload["url"],
+            username=payload["username"],
+            password=payload["password"],
+            ffmpeg=self._ffmpeg,
+            transport=self._audio_transport,
+            chunk_ms=self._audio_chunk_ms,
+            context_provider=lambda: session.latest_context or {},
+            on_audio=self._on_audio,
+            logger=self._logger,
+        )
+        self._sessions[session_id] = session
+        try:
+            await session.audio.start()
+            if payload["waitForAudio"]:
+                await session.audio.wait_ready()
+                response = {**response, "state": "audioReady"}
+        except Exception:
+            self._sessions.pop(session_id, None)
+            await session.audio.stop()
+            raise
         return response
 
     async def _data_session(self, payload: Payload) -> Payload:
@@ -360,8 +567,17 @@ class MachiningMonitorSocketServer:
         if sequence > session.sequence:
             session.sequence = sequence
             session.last_data = serialized
+        data = payload["data"]
+        if isinstance(data, dict):
+            context = data.get("Context")
+            message = data.get("Message")
+            if isinstance(context, dict):
+                session.latest_context = context
+            if isinstance(message, dict):
+                session.latest_message = message
         session.lease_deadline = time.monotonic() + session.start["leaseSeconds"]
-        return await self._call_handler("analysis.data", payload, "dataAccepted")
+        default_state = "dataAccepted" if session.audio and session.audio.is_receiving else "audioReconnecting"
+        return await self._call_handler("analysis.data", payload, default_state)
 
     async def _heartbeat_session(self, payload: Payload) -> Payload:
         session = self._sessions.get(payload["sessionId"])
@@ -372,21 +588,22 @@ class MachiningMonitorSocketServer:
 
     async def _stop_session(self, payload: Payload) -> Payload:
         session_id = payload["sessionId"]
-        response = await self._call_handler("analysis.stop", payload, "stopped")
-        self._sessions.pop(session_id, None)
-        self._ended_sessions.add(session_id)
-        if len(self._ended_sessions) > 10000:
-            self._ended_sessions.clear()
-        return response
+        session = self._sessions.pop(session_id, None)
+        try:
+            return await self._call_handler("analysis.stop", payload, "stopped")
+        finally:
+            if session is not None and session.audio is not None:
+                await session.audio.stop()
+            self._ended_sessions.add(session_id)
+            if len(self._ended_sessions) > 10000:
+                self._ended_sessions.clear()
 
     async def _expire_sessions(self) -> None:
         now = time.monotonic()
         expired = [session_id for session_id, session in self._sessions.items() if session.lease_deadline <= now]
         for session_id in expired:
-            self._sessions.pop(session_id, None)
-            self._ended_sessions.add(session_id)
             try:
-                await self._call_handler("analysis.stop", {"sessionId": session_id}, "stopped")
+                await self._stop_session({"sessionId": session_id})
             except Exception as exc:
                 self._logger(f"Analyzer session {session_id} expired: {exc}")
 
@@ -395,6 +612,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="MachiningMonitor Analyzer TLS socket server")
     parser.add_argument("--host", default="127.0.0.1", help="Local address to bind")
     parser.add_argument("--port", type=int, default=7444, help="TLS socket port")
+    parser.add_argument("--ffmpeg", default=DEFAULT_FFMPEG, help="FFmpeg executable used for each RTSP session")
+    parser.add_argument("--audio-transport", choices=("tcp", "udp"), default="tcp")
+    parser.add_argument("--audio-chunk-ms", type=int, default=DEFAULT_AUDIO_CHUNK_MS)
     parser.add_argument(
         "--certificate",
         type=Path,
@@ -416,6 +636,9 @@ async def _run_server(args: argparse.Namespace) -> None:
         port=args.port,
         certificate_file=args.certificate,
         private_key_file=args.private_key,
+        ffmpeg=args.ffmpeg,
+        audio_transport=args.audio_transport,
+        audio_chunk_ms=args.audio_chunk_ms,
         logger=print,
     )
     try:
