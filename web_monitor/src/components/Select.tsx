@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 
 export interface SelectOption { value: string; label: string }
-interface SelectProps { value: string; options: SelectOption[]; onChange: (value: string) => void; disabled?: boolean; ariaLabel?: string }
+interface SelectProps { value: string; options: SelectOption[]; onChange: (value: string) => void; disabled?: boolean; ariaLabel?: string; className?: string }
 
-export default function Select({ value, options, onChange, disabled = false, ariaLabel }: SelectProps) {
+export default function Select({ value, options, onChange, disabled = false, ariaLabel, className }: SelectProps) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const selected = options.find(option => option.value === value) || options[0];
@@ -15,7 +15,7 @@ export default function Select({ value, options, onChange, disabled = false, ari
     return () => { document.removeEventListener('mousedown', close); document.removeEventListener('keydown', escape); };
   }, []);
 
-  return <div className={`select-root${open ? ' is-open' : ''}`} ref={root}>
+  return <div className={`select-root${className ? ` ${className}` : ''}${open ? ' is-open' : ''}`} ref={root}>
     <button type="button" className="select-trigger" aria-haspopup="listbox" aria-expanded={open} aria-label={ariaLabel} disabled={disabled} onClick={() => setOpen(current => !current)}>
       <span>{selected?.label}</span><span className="select-chevron" aria-hidden="true">⌄</span>
     </button>

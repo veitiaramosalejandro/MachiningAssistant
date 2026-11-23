@@ -9,6 +9,7 @@ import Select from './components/Select';
 import './styles.css';
 import './loading.css';
 import './components/select.css';
+import './components/language-select.css';
 
 type Language = 'es' | 'en' | 'pt-PT';
 type Labels = Record<string, string>;
@@ -580,7 +581,7 @@ function App() {
     };
     return <main>
         <section className="panel">
-            <div className="language-bar"><label>{t.language}<Select value={language} options={[{value: 'es', label: 'Español'}, {value: 'en', label: 'English'}, {value: 'pt-PT', label: 'Português'}]} onChange={changeLanguage} ariaLabel={t.language}/></label></div>
+            <div className="language-bar"><label>{t.language}<Select className="language-select" value={language} options={[{value: 'es', label: 'Español'}, {value: 'en', label: 'English'}, {value: 'pt-PT', label: 'Português'}]} onChange={changeLanguage} ariaLabel={t.language}/></label></div>
             <h1>{t.title}</h1><p className="intro">{t.intro}</p>
             <nav
                 className="tabs">{[['config', t.config], ['stream', t.stream], ['training', t.training]].map(([key, label]) =>
