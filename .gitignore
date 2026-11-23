@@ -16,3 +16,4 @@ Dataset/Preprocessing/current_dataset.json
 Dataset/Preprocessing/current_dataset.json.tmp
 runs/
 **/runs/
+certs/

@@ -1,0 +1,341 @@
+"""TLS socket server compatible with MachiningMonitor's Analyzer protocol.
+
+MachiningMonitor opens the connection to the Analyzer.  This module exposes
+the Python side as a small, reusable TLS server and deliberately keeps model
+execution outside the transport layer.  Callbacks receive validated payloads
+and return either a state string or an ``{"state": ...}`` dictionary.
+
+Wire compatibility with ``MachiningMonitor.Contracts.SocketProtocol``:
+
+* four-byte unsigned big-endian frame length;
+* UTF-8 JSON envelope, protocol version 1;
+* ``requestId`` correlation;
+* maximum frame size of 1 MiB.
+"""
+from __future__ import annotations
+
+import asyncio
+import argparse
+from collections.abc import Awaitable, Callable
+import inspect
+import json
+from pathlib import Path
+import ssl
+import sys
+from typing import Any, Final, TypeAlias
+from urllib.parse import urlsplit
+from uuid import UUID
+
+
+MAXIMUM_FRAME_BYTES: Final = 1024 * 1024
+PROTOCOL_VERSION: Final = 1
+ACCEPTED_MESSAGE_TYPE: Final = "analysis.accepted"
+PROJECT_ROOT: Final = Path(__file__).resolve().parents[1]
+DEFAULT_CERTIFICATE: Final = PROJECT_ROOT / "certs" / "machining-assistant-analyzer.crt"
+DEFAULT_PRIVATE_KEY: Final = PROJECT_ROOT / "certs" / "machining-assistant-analyzer.key"
+
+Payload: TypeAlias = dict[str, Any]
+HandlerResult: TypeAlias = str | Payload
+MessageHandler: TypeAlias = Callable[[Payload], HandlerResult | Awaitable[HandlerResult]]
+
+
+def _require_object(value: Any, name: str) -> Payload:
+    if not isinstance(value, dict):
+        raise ValueError(f"{name} must be a JSON object")
+    return value
+
+
+def _uuid(value: Any, field: str, *, allow_empty: bool = False) -> str:
+    try:
+        parsed = UUID(str(value))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be a UUID") from exc
+    if not allow_empty and parsed.int == 0:
+        raise ValueError(f"{field} must not be empty")
+    return str(parsed)
+
+
+def encode_message(message_type: str, request_id: str | UUID, payload: Payload) -> bytes:
+    """Encode one MachiningMonitor-compatible length-prefixed JSON frame."""
+    if not message_type or len(message_type) > 64:
+        raise ValueError("message type must contain 1..64 characters")
+    request = _uuid(request_id, "requestId")
+    body = json.dumps(
+        {
+            "type": message_type,
+            "requestId": request,
+            "payload": _require_object(payload, "payload"),
+            "version": PROTOCOL_VERSION,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    if len(body) == 0 or len(body) > MAXIMUM_FRAME_BYTES:
+        raise ValueError("TCP frame exceeds the 1 MiB maximum")
+    return len(body).to_bytes(4, "big") + body
+
+
+async def read_message(reader: asyncio.StreamReader) -> dict[str, Any]:
+    """Read, size-check and validate one complete protocol frame."""
+    header = await reader.readexactly(4)
+    size = int.from_bytes(header, "big")
+    if size == 0 or size > MAXIMUM_FRAME_BYTES:
+        raise ValueError("invalid TCP frame length")
+    raw = await reader.readexactly(size)
+    try:
+        message = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid UTF-8 JSON envelope") from exc
+    message = _require_object(message, "message")
+    if message.get("version") != PROTOCOL_VERSION:
+        raise ValueError("unsupported TCP protocol version")
+    message_type = message.get("type")
+    if not isinstance(message_type, str) or not 0 < len(message_type) <= 64:
+        raise ValueError("invalid message type")
+    request_id = _uuid(message.get("requestId"), "requestId")
+    payload = _require_object(message.get("payload"), "payload")
+    return {"type": message_type, "requestId": request_id, "payload": payload, "version": PROTOCOL_VERSION}
+
+
+def _validate_start(payload: Payload) -> Payload:
+    result = dict(payload)
+    result["sessionId"] = _uuid(result.get("sessionId"), "sessionId")
+    url = result.get("url")
+    if not isinstance(url, str) or len(url) > 4096:
+        raise ValueError("url must be a valid RTSP URL")
+    parsed = urlsplit(url)
+    if parsed.scheme.lower() not in {"rtsp", "rtsps"} or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError("url must be RTSP/RTSPS without embedded credentials")
+    if not isinstance(result.get("username"), str) or not isinstance(result.get("password"), str):
+        raise ValueError("username and password are required strings")
+    if len(result["username"]) > 1024 or len(result["password"]) > 4096:
+        raise ValueError("RTSP credentials exceed the allowed size")
+    origin = result.get("origin", "Driver")
+    if origin not in {"Driver", "RecordingManager"}:
+        raise ValueError("origin is invalid")
+    lease = result.get("leaseSeconds", 20)
+    if isinstance(lease, bool) or not isinstance(lease, int) or not 5 <= lease <= 60:
+        raise ValueError("leaseSeconds must be between 5 and 60")
+    result["leaseSeconds"] = lease
+    if result.get("machineId") is not None:
+        result["machineId"] = _uuid(result["machineId"], "machineId", allow_empty=True)
+    return result
+
+
+def _validate_session_payload(payload: Payload, field: str = "sessionId") -> Payload:
+    result = dict(payload)
+    result[field] = _uuid(result.get(field), field)
+    return result
+
+
+def _validate_data(payload: Payload) -> Payload:
+    result = _validate_session_payload(payload)
+    sequence = result.get("sequence")
+    if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
+        raise ValueError("sequence must be a positive integer")
+    if result.get("kind") not in {"context", "event", "playback"}:
+        raise ValueError("kind is invalid")
+    position = result.get("positionSeconds", 0)
+    if isinstance(position, bool) or not isinstance(position, (int, float)) or position < 0:
+        raise ValueError("positionSeconds must be non-negative")
+    if "data" not in result:
+        raise ValueError("data is required")
+    return result
+
+
+class MachiningMonitorSocketServer:
+    """TLS Analyzer endpoint consumed by MachiningMonitor.
+
+    The callbacks are intentionally application-level.  They must not block
+    the event loop; use an executor or an async queue for model inference.
+    The default handlers acknowledge the protocol without claiming that audio
+    or model inference succeeded.
+    """
+
+    def __init__(
+        self,
+        *,
+        host: str = "127.0.0.1",
+        port: int = 7444,
+        certificate_file: str | Path,
+        private_key_file: str | Path | None = None,
+        on_start: MessageHandler | None = None,
+        on_data: MessageHandler | None = None,
+        on_stop: MessageHandler | None = None,
+        on_heartbeat: MessageHandler | None = None,
+        logger: Callable[[str], None] | None = None,
+    ) -> None:
+        if not 1 <= port <= 65535:
+            raise ValueError("port must be between 1 and 65535")
+        self.host = host
+        self.port = port
+        self.certificate_file = Path(certificate_file).expanduser().resolve()
+        self.private_key_file = Path(private_key_file).expanduser().resolve() if private_key_file else None
+        self._handlers = {
+            "analysis.start": on_start,
+            "analysis.data": on_data,
+            "analysis.stop": on_stop,
+            "analysis.heartbeat": on_heartbeat,
+        }
+        self._logger = logger or (lambda message: None)
+        self._server: asyncio.AbstractServer | None = None
+        self._connections: set[asyncio.Task[None]] = set()
+
+    def _ssl_context(self) -> ssl.SSLContext:
+        if not self.certificate_file.is_file():
+            raise FileNotFoundError(f"TLS certificate not found: {self.certificate_file}")
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.load_cert_chain(str(self.certificate_file), str(self.private_key_file) if self.private_key_file else None)
+        return context
+
+    async def start(self) -> None:
+        """Bind the TLS listener.  Raises if the port cannot be bound."""
+        if self._server is not None:
+            raise RuntimeError("server is already running")
+        self._server = await asyncio.start_server(
+            self._handle_client,
+            host=self.host,
+            port=self.port,
+            ssl=self._ssl_context(),
+            limit=MAXIMUM_FRAME_BYTES + 4,
+        )
+        self._logger(f"MachiningMonitor Analyzer socket listening on {self.host}:{self.port}")
+
+    async def serve_forever(self) -> None:
+        if self._server is None:
+            await self.start()
+        assert self._server is not None
+        async with self._server:
+            await self._server.serve_forever()
+
+    async def stop(self) -> None:
+        server, self._server = self._server, None
+        if server is not None:
+            server.close()
+            await server.wait_closed()
+        tasks = tuple(self._connections)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        task = asyncio.current_task()
+        if task is not None:
+            self._connections.add(task)
+        peer = writer.get_extra_info("peername")
+        try:
+            while True:
+                message = await read_message(reader)
+                response = await self._dispatch(message["type"], message["payload"])
+                writer.write(encode_message(ACCEPTED_MESSAGE_TYPE, message["requestId"], response))
+                await writer.drain()
+        except asyncio.IncompleteReadError as exc:
+            # A TLS client may probe the port and close before sending the
+            # first protocol frame.  This is a normal disconnect, not an
+            # unhandled server exception.  A partial frame is still reported
+            # because it can indicate a protocol or transport failure.
+            if exc.partial:
+                self._logger(f"MachiningMonitor Analyzer socket ended with an incomplete frame for {peer}")
+        except asyncio.CancelledError:
+            raise
+        except (ConnectionError, OSError, ValueError, json.JSONDecodeError) as exc:
+            self._logger(f"MachiningMonitor Analyzer socket closed for {peer}: {exc}")
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
+            if task is not None:
+                self._connections.discard(task)
+
+    async def _dispatch(self, message_type: str, payload: Payload) -> Payload:
+        if message_type == "analysis.ping":
+            return {"sessionId": str(UUID(int=0)), "state": "ready"}
+        if message_type == "analysis.start":
+            payload = _validate_start(payload)
+        elif message_type == "analysis.data":
+            payload = _validate_data(payload)
+        elif message_type in {"analysis.stop", "analysis.heartbeat"}:
+            payload = _validate_session_payload(payload)
+        else:
+            raise ValueError(f"unknown analyzer command: {message_type}")
+
+        handler = self._handlers[message_type]
+        if handler is None:
+            state = {
+                "analysis.start": "accepted",
+                "analysis.data": "dataAccepted",
+                "analysis.stop": "stopped",
+                "analysis.heartbeat": "alive",
+            }[message_type]
+            return {"sessionId": payload["sessionId"], "state": state}
+        result = handler(payload)
+        if inspect.isawaitable(result):
+            result = await result
+        if isinstance(result, str):
+            return {"sessionId": payload["sessionId"], "state": result}
+        result = _require_object(result, "handler result")
+        response = dict(result)
+        response.setdefault("sessionId", payload["sessionId"])
+        if not isinstance(response.get("state"), str) or not response["state"]:
+            raise ValueError("handler result must contain a non-empty state")
+        return response
+
+
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="MachiningMonitor Analyzer TLS socket server")
+    parser.add_argument("--host", default="127.0.0.1", help="Local address to bind")
+    parser.add_argument("--port", type=int, default=7444, help="TLS socket port")
+    parser.add_argument(
+        "--certificate",
+        type=Path,
+        default=DEFAULT_CERTIFICATE,
+        help=f"PEM certificate file (default: {DEFAULT_CERTIFICATE})",
+    )
+    parser.add_argument(
+        "--private-key",
+        type=Path,
+        default=DEFAULT_PRIVATE_KEY,
+        help=f"PEM private key file (default: {DEFAULT_PRIVATE_KEY})",
+    )
+    return parser.parse_args(argv)
+
+
+async def _run_server(args: argparse.Namespace) -> None:
+    server = MachiningMonitorSocketServer(
+        host=args.host,
+        port=args.port,
+        certificate_file=args.certificate,
+        private_key_file=args.private_key,
+        logger=print,
+    )
+    try:
+        await server.serve_forever()
+    finally:
+        await server.stop()
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+    try:
+        asyncio.run(_run_server(args))
+    except KeyboardInterrupt:
+        print("MachiningMonitor Analyzer socket stopped.")
+    except (FileNotFoundError, OSError, ssl.SSLError) as exc:
+        print(
+            "No se pudo iniciar el servidor TLS: " + str(exc) +
+            "\nGenere el certificado con: "
+            ".\\Integration\\New-AnalyzerDevCertificate.ps1",
+            file=sys.stderr,
+        )
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
