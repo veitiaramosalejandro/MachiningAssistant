@@ -569,8 +569,8 @@ class MachiningMonitorSocketServer:
             session.last_data = serialized
         data = payload["data"]
         if isinstance(data, dict):
-            context = data.get("Context")
-            message = data.get("Message")
+            context = data.get("Context", data.get("context"))
+            message = data.get("Message", data.get("message"))
             if isinstance(context, dict):
                 session.latest_context = context
             if isinstance(message, dict):

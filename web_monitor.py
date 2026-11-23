@@ -6,6 +6,7 @@ explicitly requested recording imports and training jobs.
 """
 from __future__ import annotations
 
+import asyncio
 import csv
 import hashlib
 import json
@@ -28,6 +29,12 @@ from persistence import persist_import, persist_training
 from persistence import training_history as storage_training_history
 from Integration.rtsp_cnc_metadata import StreamCncMetadata, build_stream_feature_vector
 from Integration.rtsp_training_dataset import build_rtsp_dataset
+from Integration.machining_monitor_socket import (
+    DEFAULT_CERTIFICATE,
+    DEFAULT_PRIVATE_KEY,
+    MachiningMonitorSocketServer,
+)
+from Integration.socket_training_bridge import SocketTrainingBridge
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -85,6 +92,126 @@ _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
 _rtsp_listener_jobs: dict[str, dict] = {}
 _rtsp_listener_lock = threading.Lock()
+_socket_training_bridge: SocketTrainingBridge | None = None
+_socket_server_thread: threading.Thread | None = None
+
+
+def _socket_start(payload: dict) -> str:
+    if _socket_training_bridge is None:
+        raise RuntimeError("El socket de integración no está iniciado")
+    state = _socket_training_bridge.on_start(payload)
+    session_id = str(payload["sessionId"])
+    bridge_status = _socket_training_bridge.status(session_id)
+    checkpoint = _latest_rtsp_checkpoint() or Path(setting("MACHINING_CHECKPOINT", "")).expanduser().resolve()
+    with _rtsp_listener_lock:
+        _rtsp_listener_jobs[session_id] = {
+            **bridge_status,
+            "ingestion_mode": "machining_monitor_socket",
+            "model_family": "CNN1D-VAE",
+            "training_policy": "continuous_capture_then_batch",
+            "min_training_seconds": 5,
+            "minimum_labeled_windows": 1,
+            "training_ready": False,
+            "labeled_windows": 0,
+            "checkpoint_contract": _checkpoint_contract(checkpoint) if checkpoint.is_file() else {},
+            "checkpoint": str(checkpoint) if checkpoint.is_file() else None,
+            "training_request_output": str(Path(bridge_status["session_dir"]) / "training_request.json"),
+            "training_status": "idle",
+            "training_process": None,
+            "training_output": None,
+            "training_log": None,
+            "training_checkpoint": None,
+        }
+    return state
+
+
+def _socket_data(payload: dict) -> str:
+    if _socket_training_bridge is None:
+        raise RuntimeError("El socket de integración no está iniciado")
+    return _socket_training_bridge.on_data(payload)
+
+
+def _socket_stop(payload: dict) -> str:
+    if _socket_training_bridge is None:
+        raise RuntimeError("El socket de integración no está iniciado")
+    state = _socket_training_bridge.on_stop(payload)
+    session_id = str(payload["sessionId"])
+    with _rtsp_listener_lock:
+        job = _rtsp_listener_jobs.get(session_id)
+        if job is not None:
+            job["status"] = "stopped"
+    return state
+
+
+def _socket_audio(chunk: dict) -> None:
+    if _socket_training_bridge is not None:
+        _socket_training_bridge.on_audio(chunk)
+
+
+def _socket_listener_public(job: dict) -> dict:
+    if _socket_training_bridge is not None:
+        status = _socket_training_bridge.status(str(job["listener_id"]))
+        job.update(status)
+    result = {key: value for key, value in job.items() if key != "pending_audio"}
+    aligned = Path(str(job.get("aligned_training_output", "")))
+    rows = _read_json_lines(aligned) if aligned.is_file() else []
+    result["observed_windows"] = len(rows)
+    result["labeled_windows"] = 0
+    result["training_ready"] = False
+    result["metadata_events"] = sum(1 for row in rows if row.get("events"))
+    result["metadata_snapshots"] = sum(1 for row in rows if isinstance(row.get("context"), dict))
+    result["training_note"] = "Audio y contexto recibidos por socket; las etiquetas reales aún no están definidas."
+    training_process = job.get("training_process")
+    if training_process is not None:
+        return_code = training_process.poll()
+        if return_code is None:
+            job["training_status"] = "running"
+        else:
+            job["training_status"] = "completed" if return_code == 0 else "failed"
+            job["training_return_code"] = return_code
+            output = Path(str(job.get("training_output", "")))
+            checkpoint = output / "best.pt"
+            job["training_checkpoint"] = str(checkpoint) if checkpoint.is_file() else None
+    result["training_status"] = job.get("training_status", "idle")
+    result["training_checkpoint"] = job.get("training_checkpoint")
+    metrics_path = Path(str(job.get("training_output", ""))) / "metrics.json"
+    result["training_metrics"] = _read_json_file(metrics_path, {}) if metrics_path.is_file() else None
+    training_log = Path(str(job.get("training_log", "")))
+    result["training_log_tail"] = training_log.read_text(encoding="utf-8", errors="replace")[-12000:] if training_log.is_file() else ""
+    return result
+
+
+def _start_socket_integration() -> None:
+    """Start the Analyzer TLS endpoint beside the web monitor."""
+    global _socket_training_bridge, _socket_server_thread
+    enabled = setting("MACHINING_ANALYZER_SOCKET_ENABLED", "true").lower() in {"1", "true", "yes"}
+    if not enabled or _socket_server_thread is not None:
+        return
+    host = setting("MACHINING_ANALYZER_SOCKET_HOST", "127.0.0.1")
+    port = int(setting("MACHINING_ANALYZER_SOCKET_PORT", "7444"))
+    certificate = Path(setting("MACHINING_ANALYZER_SOCKET_CERTIFICATE", str(DEFAULT_CERTIFICATE)))
+    private_key = Path(setting("MACHINING_ANALYZER_SOCKET_PRIVATE_KEY", str(DEFAULT_PRIVATE_KEY)))
+    _socket_training_bridge = SocketTrainingBridge(PROJECT_ROOT / "runs" / "rtsp" / "socket_sessions", print)
+
+    def run() -> None:
+        try:
+            server = MachiningMonitorSocketServer(
+                host=host,
+                port=port,
+                certificate_file=certificate,
+                private_key_file=private_key,
+                on_start=_socket_start,
+                on_data=_socket_data,
+                on_stop=_socket_stop,
+                on_audio=_socket_audio,
+                logger=print,
+            )
+            asyncio.run(server.serve_forever())
+        except Exception as exc:
+            print(f"Analyzer socket integration unavailable: {exc}", flush=True)
+
+    _socket_server_thread = threading.Thread(target=run, name="machining-analyzer-socket", daemon=True)
+    _socket_server_thread.start()
 
 
 def _safe_rtsp_url(value: object) -> tuple[str, str]:
@@ -576,6 +703,8 @@ def _rtsp_stream_observation(job: dict) -> dict:
 
 
 def _rtsp_listener_public(job: dict) -> dict:
+    if job.get("ingestion_mode") == "machining_monitor_socket":
+        return _socket_listener_public(job)
     process = job.get("process")
     metadata_process = job.get("metadata_process")
     if process is not None:
@@ -722,7 +851,13 @@ def request_rtsp_training(payload: dict) -> dict:
         if job is None:
             raise FileNotFoundError("No existe la sesión RTSP solicitada")
     blockers = []
-    if int(job.get("metadata_events", 0)) == 0 and int(job.get("metadata_snapshots", 0)) == 0:
+    if job.get("ingestion_mode") == "machining_monitor_socket":
+        aligned_rows = _read_json_lines(Path(str(job.get("aligned_training_output", ""))))
+        if not aligned_rows:
+            blockers.append("El socket todavía no ha producido ventanas completas de audio")
+        elif any(not isinstance(row.get("context"), dict) for row in aligned_rows):
+            blockers.append("Hay ventanas de audio sin un contexto rtsp_stream válido")
+    elif int(job.get("metadata_events", 0)) == 0 and int(job.get("metadata_snapshots", 0)) == 0:
         blockers.append("No se han recibido snapshots ni eventos x-machining-metadata")
     session_dir = Path(str(job.get("aligned_training_output", ""))).parent
     training_output, training_log, attempt_suffix = _next_rtsp_training_paths(session_dir)
@@ -1934,6 +2069,7 @@ def main() -> int:
         raise SystemExit(f"Missing web assets: {WEB_ROOT}")
     print(f"Machining Assistant monitor: http://{args.host}:{args.port}", flush=True)
     print(f"MachiningMonitor API: {SERVICE_URL}; data root: {DATA_ROOT}", flush=True)
+    _start_socket_integration()
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
     return 0
 
