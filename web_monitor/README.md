@@ -2,6 +2,9 @@
 
 Aplicación web local sin Streamlit. El backend Python mantiene la API key fuera del navegador.
 
+La interfaz está implementada con React + Vite. El código fuente está en `src/` y la
+compilación de producción se genera en `dist/`.
+
 ## Configuración
 
 Definir en el entorno del proceso:
@@ -16,9 +19,28 @@ Si se omite `MACHINING_MONITOR_DATA_ROOT`, se usa esa ruta por defecto relativa 
 
 ## Arranque
 
+Instalar dependencias y compilar la interfaz:
+
+```powershell
+cd web_monitor
+npm install
+npm run build
+cd ..
+```
+
 ```powershell
 & .venv\Scripts\python.exe web_monitor.py
 ```
+
+Para desarrollo visual, arrancar el backend en `8765` y, en otra terminal:
+
+```powershell
+cd web_monitor
+npm run dev
+```
+
+Vite reenvía `/api` al backend Python. El backend sirve automáticamente `dist/`
+cuando existe; si no hay compilación, usa los assets del directorio fuente.
 
 El monitor escucha por defecto en todas las interfaces (`0.0.0.0:8765`). Desde
 otra máquina de la red, abrir `http://IP_DEL_EQUIPO:8765`, sustituyendo la IP

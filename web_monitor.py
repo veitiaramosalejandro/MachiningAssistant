@@ -31,7 +31,8 @@ from Integration.rtsp_training_dataset import build_rtsp_dataset
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-WEB_ROOT = PROJECT_ROOT / "web_monitor"
+WEB_SOURCE_ROOT = PROJECT_ROOT / "web_monitor"
+WEB_ROOT = WEB_SOURCE_ROOT / "dist" if (WEB_SOURCE_ROOT / "dist" / "index.html").is_file() else WEB_SOURCE_ROOT
 RUNS_ROOT = PROJECT_ROOT / "runs" / "monitor_training"
 INFERENCE_ROOT = PROJECT_ROOT / "runs" / "inference"
 PYTHON = Path(os.environ.get("MACHINING_PYTHON", str(PROJECT_ROOT / ".venv" / "Scripts" / "python.exe")))

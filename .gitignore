@@ -16,4 +16,6 @@ Dataset/Preprocessing/current_dataset.json
 Dataset/Preprocessing/current_dataset.json.tmp
 runs/
 **/runs/
+web_monitor/node_modules/
+web_monitor/dist/
 certs/
