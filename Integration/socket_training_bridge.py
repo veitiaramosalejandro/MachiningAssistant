@@ -58,13 +58,25 @@ def _stream_context_from_socket_context(raw: object, *, session_id: str, sequenc
     def field(name: str) -> Any:
         return raw.get(name, raw.get(name[:1].lower() + name[1:]))
 
-    # A future sender may already provide the independent stream contract.
+    # A sender may already provide the independent stream contract.
     if isinstance(raw.get("context"), dict) or isinstance(raw.get("parameters"), dict):
         candidate = dict(raw)
         candidate.setdefault("type", "context")
         candidate.setdefault("recordingId", field("ExecutionId") or session_id)
         candidate.setdefault("sequence", sequence)
         return candidate
+
+    # MachiningMonitor sends the observed MachiningContext with PascalCase
+    # members. Preserve that context inside the stream contract instead of
+    # flattening or inventing fields. build_stream_feature_vector then reads:
+    # context.context.Parameters and context.context.Tool.
+    if isinstance(raw.get("Parameters"), dict) or isinstance(raw.get("Tool"), dict):
+        return {
+            "type": "context",
+            "recordingId": field("ExecutionId") or session_id,
+            "sequence": sequence,
+            "context": {"context": dict(raw)},
+        }
 
     candidate = {
         "type": "context",
@@ -139,6 +151,8 @@ class SocketTrainingBridge:
                 "context_output": str(session_dir / "contexts.jsonl"),
                 "latest_context": None,
                 "latest_context_error": None,
+                "latest_events": [],
+                "latest_context_position_seconds": None,
                 "audio_frames": 0,
                 "audio_chunks": 0,
                 "audio_bytes_received": 0,
@@ -171,6 +185,11 @@ class SocketTrainingBridge:
             job["last_sequence"] = int(payload["sequence"])
             job["metadata_messages"] = int(job["metadata_messages"]) + 1
             data = payload.get("data")
+            events_value = data.get("Events", data.get("events")) if isinstance(data, dict) else None
+            events = [event for event in events_value if isinstance(event, dict)] if isinstance(events_value, list) else []
+            job["latest_events"] = events
+            job["metadata_events"] = int(job["metadata_events"]) + len(events)
+            job["latest_context_position_seconds"] = payload.get("positionSeconds")
             raw_context = data.get("Context", data.get("context")) if isinstance(data, dict) else None
             if isinstance(raw_context, dict):
                 try:
@@ -180,6 +199,7 @@ class SocketTrainingBridge:
                     build_stream_feature_vector(context)
                     job["latest_context"] = context
                     job["latest_context_error"] = None
+                    job["metadata_snapshots"] = int(job["metadata_snapshots"]) + 1
                     _json_line(Path(job["context_output"]), context)
                 except (TypeError, ValueError) as exc:
                     job["latest_context"] = None
@@ -222,7 +242,8 @@ class SocketTrainingBridge:
                     "audio_wav_file": str(Path("audio_windows") / wav_path.name),
                     "context": context,
                     "context_error": job.get("latest_context_error") if context is None else None,
-                    "events": [],
+                    "events": list(job.get("latest_events", [])),
+                    "context_position_seconds": job.get("latest_context_position_seconds"),
                     "session_id": session_id,
                     "sequence": job.get("last_sequence"),
                 }

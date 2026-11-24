@@ -528,24 +528,35 @@ function App() {
     const [listenerId, setListenerId] = useState<string | null>(null);
     const [log, setLog] = useState(t.ready);
     const [busy, setBusy] = useState<string | null>(null);
+    const syncReceivedSocketConfiguration = useCallback((data: ListenerData) => {
+        if (data.ingestion_mode !== 'machining_monitor_socket' && data.connection_mode !== 'machining_monitor_socket') return;
+        setConfig(current => ({
+            ...current,
+            rtsp_url: typeof data.rtsp_url === 'string' ? data.rtsp_url : current.rtsp_url,
+            transport: typeof data.transport === 'string' ? data.transport : current.transport,
+        }));
+    }, []);
     const refresh = useCallback(async (id: string | null) => {
         if (!id) return;
         try {
-            setListener(await request<ListenerData>(`/api/rtsp-training/listener/status?listener_id=${encodeURIComponent(id)}`));
+            const data = await request<ListenerData>(`/api/rtsp-training/listener/status?listener_id=${encodeURIComponent(id)}`);
+            setListener(data);
+            syncReceivedSocketConfiguration(data);
         } catch (error) {
             setLog(`Estado no disponible: ${error instanceof Error ? error.message : String(error)}`);
         }
-    }, []);
+    }, [syncReceivedSocketConfiguration]);
     useEffect(() => {
         request<ListenerData & {active?: boolean}>('/api/rtsp-training/listener/active').then((data) => {
             if (data.active && data.listener_id) {
                 setListenerId(data.listener_id);
                 setListener(data);
+                syncReceivedSocketConfiguration(data);
                 setTab('stream');
             }
         }).catch(() => {
         });
-    }, []);
+    }, [syncReceivedSocketConfiguration]);
     useEffect(() => {
         if (!listenerId) return undefined;
         const timer = setInterval(() => refresh(listenerId), 3000);
@@ -557,6 +568,7 @@ function App() {
             const data = await post<ListenerData>(path, body);
             setListener(data);
             if (data.listener_id) setListenerId(data.listener_id);
+            syncReceivedSocketConfiguration(data);
             setLog(JSON.stringify(data, null, 2));
             return data;
         } catch (error) {
