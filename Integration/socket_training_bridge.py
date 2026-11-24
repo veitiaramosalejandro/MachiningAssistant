@@ -161,6 +161,8 @@ class SocketTrainingBridge:
                 "started_at": time.time(),
                 "metadata_status": "starting",
                 "metadata_return_code": None,
+                "stop_received": False,
+                "stop_received_at": None,
                 "observed_windows": 0,
                 "labeled_duration_seconds": 0,
                 "metadata_messages": 0,
@@ -181,6 +183,8 @@ class SocketTrainingBridge:
             job = self._sessions.get(session_id)
             if job is None:
                 raise ValueError("socket training session does not exist")
+            if job.get("stop_received") or job.get("stopped_at"):
+                return "stopped"
             _json_line(Path(job["socket_data_output"]), payload)
             job["last_sequence"] = int(payload["sequence"])
             job["metadata_messages"] = int(job["metadata_messages"]) + 1
@@ -217,6 +221,8 @@ class SocketTrainingBridge:
         with self._lock:
             job = self._sessions.get(session_id)
             if job is None:
+                return
+            if job.get("stop_received") or job.get("stopped_at"):
                 return
             pending: bytearray = job["pending_audio"]
             pending.extend(bytes(pcm))
@@ -262,6 +268,8 @@ class SocketTrainingBridge:
             if job is not None:
                 job["status"] = "stopped"
                 job["metadata_status"] = "stopped"
+                job["stop_received"] = True
+                job["stop_received_at"] = time.time()
                 job["stopped_at"] = time.time()
                 self._write_status(job)
         return "stopped"

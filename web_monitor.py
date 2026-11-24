@@ -99,6 +99,10 @@ def _socket_listener_public(job: dict) -> dict:
         for key, value in metadata.items():
             if key != "pending_audio":
                 job[key] = value
+    stop_received = bool(job.get("stop_received") or job.get("stopped_at") or job.get("status") == "stopped")
+    if stop_received:
+        job["status"] = "stopped"
+        job["metadata_status"] = "stopped"
     result = {key: value for key, value in job.items() if key != "pending_audio"}
     aligned = Path(str(job.get("aligned_training_output", "")))
     rows = _read_json_lines(aligned) if aligned.is_file() else []
@@ -124,12 +128,14 @@ def _socket_listener_public(job: dict) -> dict:
     result["training_status"] = job.get("training_status", "idle")
     result["training_checkpoint"] = job.get("training_checkpoint")
     result["training_gate"] = {
-        "stop_received": job.get("status") in {"stopped", "completed"},
-        "can_request_batch": job.get("status") in {"stopped", "completed"},
+        "stop_received": stop_received,
+        "can_request_batch": stop_received,
         "observed_windows": len(rows),
         "minimum_windows": int(job.get("minimum_labeled_windows", 120)),
         "status": job.get("status"),
     }
+    result["stop_received"] = stop_received
+    result["stop_received_at"] = job.get("stop_received_at") or job.get("stopped_at")
     metrics_path = Path(str(job.get("training_output", ""))) / "metrics.json"
     result["training_metrics"] = _read_json_file(metrics_path, {}) if metrics_path.is_file() else None
     training_log = Path(str(job.get("training_log", "")))
@@ -801,7 +807,7 @@ def _active_socket_job_from_disk() -> dict | None:
     )
     for session_dir in sessions:
         job = _socket_job_from_disk(session_dir.name)
-        if job is not None and job.get("status") not in {"stopped", "completed"}:
+        if job is not None and job.get("status") not in {"stopped", "completed"} and not job.get("stopped_at") and not job.get("stop_received"):
             return job
     return None
 
@@ -900,10 +906,15 @@ def active_rtsp_listener_status() -> dict:
         ) if SOCKET_TRAINING_ROOT.is_dir() else []
         for session_dir in socket_sessions:
             job = _socket_job_from_disk(session_dir.name)
-            if job is not None and job.get("status") not in {"stopped", "completed"}:
+            if job is not None and job.get("status") not in {"stopped", "completed"} and not job.get("stopped_at") and not job.get("stop_received"):
                 _rtsp_listener_jobs[session_dir.name] = job
                 result = _rtsp_listener_public(job)
                 result["active"] = True
+                for stopped_dir in socket_sessions:
+                    stopped_job = _socket_job_from_disk(stopped_dir.name)
+                    if stopped_job is not None and stopped_job.get("status") == "stopped":
+                        result["latest_stopped"] = _socket_listener_public(stopped_job)
+                        break
                 return result
         # After analysis.stop there is no active process, but the most recent
         # socket session must remain selectable for review and training.

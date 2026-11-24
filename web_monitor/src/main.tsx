@@ -534,6 +534,7 @@ function App() {
     const [listenerId, setListenerId] = useState<string | null>(null);
     const [log, setLog] = useState(t.ready);
     const [busy, setBusy] = useState<string | null>(null);
+    const selectedListenerId = listenerId || listener?.listener_id || null;
     const syncReceivedSocketConfiguration = useCallback((data: ListenerData) => {
         if (data.ingestion_mode !== 'machining_monitor_socket' && data.connection_mode !== 'machining_monitor_socket') return;
         setConfig(current => ({
@@ -542,10 +543,29 @@ function App() {
             transport: typeof data.transport === 'string' ? data.transport : current.transport,
         }));
     }, []);
+    useEffect(() => {
+        if (!listener) return;
+        console.info('[rtsp/status]', {
+            listenerId: listener.listener_id,
+            status: listener.status,
+            stopReceived: listener.stop_received === true,
+            stopReceivedAt: listener.stop_received_at ?? null,
+            observedWindows: listener.observed_windows ?? 0,
+            metadataMessages: listener.metadata_messages ?? listener.stream_observation?.metadata_messages ?? 0,
+            currentEvents: listener.stream_observation?.current_events?.length ?? 0,
+            historicalEvents: listener.stream_observation?.historical_events?.length ?? 0,
+        });
+    }, [listener]);
     const refresh = useCallback(async (id: string | null) => {
         if (!id) return;
         try {
             const data = await request<ListenerData>(`/api/rtsp-training/listener/status?listener_id=${encodeURIComponent(id)}`);
+            console.info('[rtsp/status-response]', {
+                listenerId: data.listener_id,
+                status: data.status,
+                stopReceived: data.stop_received === true,
+                stopReceivedAt: data.stop_received_at ?? null,
+            });
             setListener(data);
             syncReceivedSocketConfiguration(data);
         } catch (error) {
@@ -553,21 +573,26 @@ function App() {
         }
     }, [syncReceivedSocketConfiguration]);
     useEffect(() => {
-        request<ListenerData & {active?: boolean}>('/api/rtsp-training/listener/active').then((data) => {
-            if (data.listener_id) {
-                setListenerId(data.listener_id);
-                setListener(data);
-                syncReceivedSocketConfiguration(data);
-                if (data.active) setTab('stream');
+        request<ListenerData & {active?: boolean; latest_stopped?: ListenerData}>('/api/rtsp-training/listener/active').then((data) => {
+            const stopped = data.latest_stopped;
+            const activeStartedAt = Number(data.started_at ?? 0);
+            const stoppedAt = Number(stopped?.stopped_at ?? stopped?.stop_received_at ?? 0);
+            const selected = stopped && stoppedAt >= activeStartedAt ? stopped : data;
+            if (selected.listener_id) {
+                setListenerId(selected.listener_id);
+                setListener(selected);
+                syncReceivedSocketConfiguration(selected);
+                if (selected === data && data.active) setTab('stream');
             }
         }).catch(() => {
         });
     }, [syncReceivedSocketConfiguration]);
     useEffect(() => {
-        if (!listenerId) return undefined;
-        const timer = setInterval(() => refresh(listenerId), 3000);
+        console.log('selectedListenerId: ', selectedListenerId)
+        if (!selectedListenerId) return undefined;
+        const timer = setInterval(() => refresh(selectedListenerId), 3000);
         return () => clearInterval(timer);
-    }, [listenerId, refresh]);
+    }, [selectedListenerId, refresh]);
     const start = async (path: string, body: JsonObject, operation: string): Promise<ListenerData | null> => {
         setBusy(operation);
         try {
@@ -592,7 +617,7 @@ function App() {
         };
         return messages[language][key];
     };
-    const validate = () => start('/api/rtsp-training/validate', {...config, listener_id: listenerId}, operationText('validate')).then((result) => {
+    const validate = () => start('/api/rtsp-training/validate', {...config, listener_id: selectedListenerId}, operationText('validate')).then((result) => {
         if (!result) return;
         const received = result.received_configuration as JsonObject | undefined;
         if (received) {
@@ -608,7 +633,7 @@ function App() {
     });
     const connect = () => start('/api/rtsp-training/listener/start', config, operationText('connect')).then((result) => { if (result) setTab('stream'); });
     const disconnect = async () => {
-        const result = await start('/api/rtsp-training/listener/stop', {listener_id: listenerId}, operationText('disconnect'));
+        const result = await start('/api/rtsp-training/listener/stop', {listener_id: selectedListenerId}, operationText('disconnect'));
         if (result) {
             setListenerId(null);
             setListener(null);
@@ -617,7 +642,7 @@ function App() {
         }
     };
     const train = () => start('/api/rtsp-training/train', {
-        listener_id: listenerId,
+        listener_id: selectedListenerId,
         epochs: 60,
         device: 'auto'
     }, operationText('train')).then((result) => { if (result) setTab('training'); });
@@ -636,7 +661,7 @@ function App() {
                 <button className={tab === key ? 'tab active' : 'tab'} onClick={() => setTab(key)}
                         key={key}>{label}</button>)}</nav>
             {tab === 'config' &&
-                <ConfigurationView {...{config, setConfig, listenerId, listenerStatus: listener?.status, t, log, setLog, busy}} onValidate={validate}
+                <ConfigurationView {...{config, setConfig, listenerId: selectedListenerId, listenerStatus: listener?.status, stopReceived: listener?.stop_received, t, log, setLog, busy}} onValidate={validate}
                                onConnect={connect} onDisconnect={disconnect} onTrain={train}/>}{tab === 'stream' &&
             <StreamView listener={listener} t={t}/>}{tab === 'training' && <TrainingView listener={listener} t={t}/>} {busy && <LoadingOverlay message={busy} language={language}/>}</section>
     </main>;

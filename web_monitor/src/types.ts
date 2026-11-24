@@ -32,6 +32,8 @@ export interface ListenerData extends JsonObject {
   training_status?: string;
   training_checkpoint?: string;
   training_log_tail?: string;
+  stop_received?: boolean;
+  stop_received_at?: number;
 }
 
 export interface ConfigurationProps {
@@ -39,6 +41,7 @@ export interface ConfigurationProps {
   setConfig: Dispatch<SetStateAction<Config>>;
   listenerId: string | null;
   listenerStatus?: string;
+  stopReceived?: boolean;
   t: Labels;
   log: string;
   setLog: Dispatch<SetStateAction<string>>;
