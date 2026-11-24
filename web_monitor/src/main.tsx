@@ -143,7 +143,9 @@ const TEXT = {
         historicalHint: 'Eventos disponibles antes de comenzar la transmisión actual.',
         currentHint: 'Eventos que llegan después del histórico inicial.',
         latestContext: 'Último contexto CNC recibido',
+        modelContextHint: 'Contexto normalizado y vector de 7 características que se entregan al modelo.',
         predictions: 'Ventanas/predicciones de audio',
+        predictionsHint: 'Las ventanas se capturan aquí. Las predicciones aparecen cuando se ejecuta inferencia en vivo.',
         waitingStream: 'Esperando una nueva transmisión.',
         noHistory: 'Todavía no hay eventos históricos.',
         noSnapshot: 'Sin snapshot todavía.',
@@ -218,7 +220,9 @@ const TEXT = {
         historicalHint: 'Events available before the current transmission started.',
         currentHint: 'Events received after the initial history.',
         latestContext: 'Latest CNC context received',
+        modelContextHint: 'Normalized context and seven-feature vector delivered to the model.',
         predictions: 'Audio windows/predictions',
+        predictionsHint: 'Audio windows are captured here. Predictions appear when live inference is running.',
         waitingStream: 'Waiting for a new transmission.',
         noHistory: 'No historical events yet.',
         noSnapshot: 'No snapshot yet.',
@@ -293,7 +297,9 @@ const TEXT = {
         historicalHint: 'Eventos disponíveis antes do início da transmissão atual.',
         currentHint: 'Eventos recebidos depois do histórico inicial.',
         latestContext: 'Último contexto CNC recebido',
+        modelContextHint: 'Contexto normalizado e vetor de sete características entregues ao modelo.',
         predictions: 'Janelas/predições de áudio',
+        predictionsHint: 'As janelas são capturadas aqui. As predições aparecem quando a inferência ao vivo é executada.',
         waitingStream: 'A aguardar uma nova transmissão.',
         noHistory: 'Ainda não existem eventos históricos.',
         noSnapshot: 'Ainda não existe snapshot.',
@@ -548,11 +554,11 @@ function App() {
     }, [syncReceivedSocketConfiguration]);
     useEffect(() => {
         request<ListenerData & {active?: boolean}>('/api/rtsp-training/listener/active').then((data) => {
-            if (data.active && data.listener_id) {
+            if (data.listener_id) {
                 setListenerId(data.listener_id);
                 setListener(data);
                 syncReceivedSocketConfiguration(data);
-                setTab('stream');
+                if (data.active) setTab('stream');
             }
         }).catch(() => {
         });

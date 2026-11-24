@@ -26,7 +26,7 @@ import wave
 from persistence import health as storage_health
 from persistence import persist_import, persist_training
 from persistence import training_history as storage_training_history
-from Integration.rtsp_cnc_metadata import StreamCncMetadata, build_stream_feature_vector
+from Integration.rtsp_cnc_metadata import STREAM_FEATURE_NAMES, StreamCncMetadata, build_stream_feature_vector
 from Integration.rtsp_training_dataset import build_rtsp_dataset
 
 
@@ -87,10 +87,7 @@ _rtsp_listener_jobs: dict[str, dict] = {}
 _rtsp_listener_lock = threading.Lock()
 SOCKET_TRAINING_ROOT = PROJECT_ROOT / "runs" / "rtsp" / "web_sessions"
 SOCKET_MODEL_CLASS_NAMES = ("excellent", "good", "sufficient", "bad", "very_bad", "broken")
-SOCKET_CONTEXT_FEATURES = (
-    "ProgrammedRpm", "SpindleAdjustmentPercent", "AdjustedRpm",
-    "ProgrammedMmPerMin", "FeedAdjustmentPercent", "AdjustedMmPerMin", "ToolDiameterMm",
-)
+SOCKET_CONTEXT_FEATURES = STREAM_FEATURE_NAMES
 
 
 def _socket_listener_public(job: dict) -> dict:
@@ -130,6 +127,22 @@ def _socket_listener_public(job: dict) -> dict:
     result["training_metrics"] = _read_json_file(metrics_path, {}) if metrics_path.is_file() else None
     training_log = Path(str(job.get("training_log", "")))
     result["training_log_tail"] = training_log.read_text(encoding="utf-8", errors="replace")[-12000:] if training_log.is_file() else ""
+    model_vector = None
+    model_vector_error = job.get("latest_context_error")
+    if isinstance(job.get("latest_context"), dict) and not model_vector_error:
+        try:
+            model_vector = build_stream_feature_vector(job["latest_context"]).tolist()
+        except (TypeError, ValueError) as exc:
+            model_vector_error = str(exc)
+    result["model_input"] = {
+        "contract": "rtsp_stream",
+        "feature_names": list(STREAM_FEATURE_NAMES),
+        "context": job.get("latest_context"),
+        "vector": model_vector,
+        "valid": model_vector is not None,
+        "error": model_vector_error,
+        "events_are_metadata_only": True,
+    }
     result["stream_observation"] = _socket_stream_observation(job)
     return result
 
@@ -643,6 +656,12 @@ def _socket_stream_observation(job: dict) -> dict:
     current_events = []
     type_counts: dict[str, int] = {}
     latest_context = job.get("latest_context")
+    latest_model_vector = None
+    if isinstance(latest_context, dict):
+        try:
+            latest_model_vector = build_stream_feature_vector(latest_context).tolist()
+        except (TypeError, ValueError):
+            latest_model_vector = None
 
     def socket_row(item: dict, context: object, data: dict, kind: str) -> dict:
         message = data.get("message", data.get("Message"))
@@ -692,12 +711,17 @@ def _socket_stream_observation(job: dict) -> dict:
         # MachiningMonitor marks the initial replay explicitly as playback.
         # Those messages belong to the connection history; context/event data
         # arriving afterward belongs to the current session.
-        if kind == "playback":
+        if kind == "playback" and not (isinstance(events, list) and events):
             historical_events.append(row)
         else:
             current_events.append(row)
         if isinstance(context, dict) and context:
-            latest_context = context
+            try:
+                normalized = job.get("latest_context")
+                if isinstance(normalized, dict):
+                    latest_model_vector = build_stream_feature_vector(normalized).tolist()
+            except (TypeError, ValueError):
+                latest_model_vector = None
     return {
         "message_counts": type_counts,
         "metadata_messages": len(messages),
@@ -707,6 +731,9 @@ def _socket_stream_observation(job: dict) -> dict:
         "current_events": current_events[-100:],
         "metadata_phase": "current" if current_events else ("historical_bootstrap" if historical_events else "waiting_socket_data"),
         "latest_snapshot": latest_context,
+        "model_context": latest_context,
+        "model_feature_names": list(STREAM_FEATURE_NAMES),
+        "model_vector": latest_model_vector,
         "recent_audio_predictions": [],
     }
 
@@ -865,6 +892,15 @@ def active_rtsp_listener_status() -> dict:
                 _rtsp_listener_jobs[session_dir.name] = job
                 result = _rtsp_listener_public(job)
                 result["active"] = True
+                return result
+        # After analysis.stop there is no active process, but the most recent
+        # socket session must remain selectable for review and training.
+        for session_dir in socket_sessions:
+            job = _socket_job_from_disk(session_dir.name)
+            if job is not None:
+                result = _socket_listener_public(job)
+                result["active"] = False
+                result["latest"] = True
                 return result
     return {"active": False, "listener_id": None}
 
