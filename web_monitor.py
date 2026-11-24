@@ -645,6 +645,17 @@ def _socket_stream_observation(job: dict) -> dict:
         kind = str(item.get("kind", "unknown"))
         type_counts[kind] = type_counts.get(kind, 0) + 1
         data = item.get("data") if isinstance(item.get("data"), dict) else {}
+        context = data.get("context", data.get("Context"))
+        events = data.get("events", data.get("Events"))
+        message_candidate = data.get("message", data.get("Message"))
+        if kind == "playback" and not ((isinstance(context, dict) and context) or (isinstance(events, list) and events)):
+            continue
+        if kind == "context" and not isinstance(context, dict):
+            continue
+        if kind == "event" and not isinstance(message_candidate, dict):
+            continue
+        if kind not in {"context", "event", "playback"} and not data:
+            continue
         message = data.get("message", data.get("Message"))
         if not isinstance(message, dict):
             message = data

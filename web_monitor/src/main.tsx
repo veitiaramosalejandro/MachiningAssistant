@@ -345,7 +345,11 @@ function Card({label, value}: CardProps) {
 
 function EventTable({rows, t}: EventTableProps) {
     if (!rows?.length) return <p className="muted">{t.waitingStream}</p>;
+    const hasValue = (value: unknown): boolean => value !== undefined && value !== null && String(value).trim() !== '';
+    const visibleRows = rows.filter(row => Object.values(row).some(hasValue));
+    if (!visibleRows.length) return <p className="muted">{t.waitingStream}</p>;
     const columns = [['timestamp_seconds', 'Tiempo'], ['socket_kind', 'Tipo socket'], ['message_summary', 'Log socket'], ['occurrence', 'Ocurrencia'], ['value', 'Valor'], ['machine_state', 'Estado'], ['machine_activity', 'Actividad'], ['programmed_rpm', 'RPM programada'], ['adjusted_rpm', 'RPM ajustada'], ['programmed_feed', 'Avance programado'], ['adjusted_feed', 'Avance ajustado'], ['quality', 'quality']] as const;
+    const visibleColumns = columns.filter(([key]) => visibleRows.some(row => hasValue(row[key])));
     const translated: Record<string, string> = {
         Tiempo: t.language === 'Language' ? 'Time' : t.language === 'Idioma' ? 'Tempo' : 'Tiempo',
         'Tipo socket': t.language === 'Language' ? 'Socket type' : t.language === 'Idioma' ? 'Tipo de socket' : 'Tipo socket',
@@ -363,10 +367,10 @@ function EventTable({rows, t}: EventTableProps) {
     return <div className="table-wrap">
         <table>
             <thead>
-            <tr>{columns.map(([, label]) => <th key={label}>{translated[label]}</th>)}</tr>
+            <tr>{visibleColumns.map(([, label]) => <th key={label}>{translated[label]}</th>)}</tr>
             </thead>
-            <tbody>{[...rows].reverse().map((row, index) => <tr
-                key={`${row.sequence ?? index}-${index}`}>{columns.map(([key]) => <td
+            <tbody>{[...visibleRows].reverse().map((row, index) => <tr
+                key={`${row.sequence ?? index}-${index}`}>{visibleColumns.map(([key]) => <td
                 key={key}>{String(row[key] ?? '')}</td>)}</tr>)}</tbody>
         </table>
     </div>;
