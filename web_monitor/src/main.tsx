@@ -345,9 +345,11 @@ function Card({label, value}: CardProps) {
 
 function EventTable({rows, t}: EventTableProps) {
     if (!rows?.length) return <p className="muted">{t.waitingStream}</p>;
-    const columns = [['timestamp_seconds', 'Tiempo'], ['occurrence', 'Ocurrencia'], ['value', 'Valor'], ['machine_state', 'Estado'], ['machine_activity', 'Actividad'], ['programmed_rpm', 'RPM programada'], ['adjusted_rpm', 'RPM ajustada'], ['programmed_feed', 'Avance programado'], ['adjusted_feed', 'Avance ajustado'], ['quality', 'quality']] as const;
+    const columns = [['timestamp_seconds', 'Tiempo'], ['socket_kind', 'Tipo socket'], ['message_summary', 'Log socket'], ['occurrence', 'Ocurrencia'], ['value', 'Valor'], ['machine_state', 'Estado'], ['machine_activity', 'Actividad'], ['programmed_rpm', 'RPM programada'], ['adjusted_rpm', 'RPM ajustada'], ['programmed_feed', 'Avance programado'], ['adjusted_feed', 'Avance ajustado'], ['quality', 'quality']] as const;
     const translated: Record<string, string> = {
         Tiempo: t.language === 'Language' ? 'Time' : t.language === 'Idioma' ? 'Tempo' : 'Tiempo',
+        'Tipo socket': t.language === 'Language' ? 'Socket type' : t.language === 'Idioma' ? 'Tipo de socket' : 'Tipo socket',
+        'Log socket': t.language === 'Language' ? 'Socket log' : t.language === 'Idioma' ? 'Registo do socket' : 'Log socket',
         Ocurrencia: t.language === 'Language' ? 'Occurrence' : t.language === 'Idioma' ? 'Ocorrência' : 'Ocurrencia',
         Valor: t.language === 'Language' ? 'Value' : 'Valor',
         Estado: t.language === 'Language' ? 'State' : 'Estado',

@@ -130,6 +130,7 @@ def _socket_listener_public(job: dict) -> dict:
     result["training_metrics"] = _read_json_file(metrics_path, {}) if metrics_path.is_file() else None
     training_log = Path(str(job.get("training_log", "")))
     result["training_log_tail"] = training_log.read_text(encoding="utf-8", errors="replace")[-12000:] if training_log.is_file() else ""
+    result["stream_observation"] = _socket_stream_observation(job)
     return result
 
 
@@ -258,7 +259,7 @@ def _redact_rtsp_text(value: str, source: str, redacted: str) -> str:
 
 
 def start_rtsp_listener(payload: dict) -> dict:
-    """Start the existing audio RTSP receiver as a web-controlled session."""
+    """Attach the web UI to a socket session or start the local compatibility receiver."""
     with _rtsp_listener_lock:
         for active in _rtsp_listener_jobs.values():
             audio_process = active.get("process")
@@ -268,6 +269,18 @@ def start_rtsp_listener(payload: dict) -> dict:
                 raise RuntimeError(
                     f"Ya existe una escucha RTSP activa ({active.get('listener_id')}); deténgala antes de iniciar otra"
                 )
+    socket_job = _active_socket_job_from_disk()
+    if socket_job is not None:
+        listener_id = str(socket_job["listener_id"])
+        with _rtsp_listener_lock:
+            _rtsp_listener_jobs[listener_id] = socket_job
+        result = _socket_listener_public(socket_job)
+        result.update({
+            "active": True,
+            "connection_mode": "machining_monitor_socket",
+            "connection_message": "La sesión socket está escuchando el audio RTSP y recibe la metadata de MachiningMonitor.",
+        })
+        return result
     source, redacted = _safe_rtsp_url(payload.get("rtsp_url", "rtsp://127.0.0.1:8555/audio"))
     username, password = _rtsp_credentials(payload)
     if username or password:
@@ -623,6 +636,53 @@ def _rtsp_stream_observation(job: dict) -> dict:
     }
 
 
+def _socket_stream_observation(job: dict) -> dict:
+    """Expose the socket metadata log in the shape consumed by the stream tab."""
+    messages = _read_json_lines(Path(str(job.get("socket_data_output", ""))))
+    current_events = []
+    type_counts: dict[str, int] = {}
+    for item in messages[-100:]:
+        kind = str(item.get("kind", "unknown"))
+        type_counts[kind] = type_counts.get(kind, 0) + 1
+        data = item.get("data") if isinstance(item.get("data"), dict) else {}
+        message = data.get("message", data.get("Message"))
+        if not isinstance(message, dict):
+            message = data
+        event = message.get("event") if isinstance(message.get("event"), dict) else message
+        parameters = event.get("parameters") if isinstance(event.get("parameters"), dict) else {}
+        spindle = parameters.get("SpindleSpeed") if isinstance(parameters.get("SpindleSpeed"), dict) else {}
+        feed = parameters.get("FeedRate") if isinstance(parameters.get("FeedRate"), dict) else {}
+        summary = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+        current_events.append({
+            "timestamp_seconds": item.get("positionSeconds", 0),
+            "recording_id": event.get("recordingId") or item.get("sessionId"),
+            "sequence": item.get("sequence"),
+            "socket_kind": kind,
+            "message_summary": summary[:500],
+            "occurrence": event.get("occurrence") or kind,
+            "value": event.get("value") or event.get("status") or "received",
+            "machine_state": event.get("machine_state_label") or event.get("machine_state"),
+            "machine_activity": event.get("machine_activity_label") or event.get("machine_activity"),
+            "quality": event.get("quality"),
+            "observations": event.get("observations"),
+            "programmed_rpm": spindle.get("ProgrammedRpm"),
+            "adjusted_rpm": spindle.get("AdjustedRpm"),
+            "programmed_feed": feed.get("ProgrammedMmPerMin"),
+            "adjusted_feed": feed.get("AdjustedMmPerMin"),
+        })
+    return {
+        "message_counts": type_counts,
+        "metadata_messages": len(messages),
+        "metadata_events": sum(1 for item in messages if item.get("kind") == "event"),
+        "metadata_snapshots": sum(1 for item in messages if item.get("kind") in {"context", "playback"}),
+        "historical_events": [],
+        "current_events": current_events,
+        "metadata_phase": "current" if messages else "waiting_socket_data",
+        "latest_snapshot": job.get("latest_context"),
+        "recent_audio_predictions": [],
+    }
+
+
 def _socket_job_from_disk(session_id: str) -> dict | None:
     if not session_id or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for ch in session_id):
         return None
@@ -661,6 +721,22 @@ def _socket_job_from_disk(session_id: str) -> dict | None:
         "training_checkpoint": None,
     })
     return metadata
+
+
+def _active_socket_job_from_disk() -> dict | None:
+    """Find the newest socket session that is still receiving data."""
+    if not SOCKET_TRAINING_ROOT.is_dir():
+        return None
+    sessions = sorted(
+        (path for path in SOCKET_TRAINING_ROOT.iterdir() if path.is_dir()),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for session_dir in sessions:
+        job = _socket_job_from_disk(session_dir.name)
+        if job is not None and job.get("status") not in {"stopped", "completed"}:
+            return job
+    return None
 
 
 def _rtsp_listener_public(job: dict) -> dict:
