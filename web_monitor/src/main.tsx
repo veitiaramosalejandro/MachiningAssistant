@@ -10,6 +10,7 @@ import './styles.css';
 import './loading.css';
 import './components/select.css';
 import './components/language-select.css';
+import './components/training-status.css';
 
 type Language = 'es' | 'en' | 'pt-PT';
 type Labels = Record<string, string>;
@@ -159,6 +160,11 @@ const TEXT = {
         samples: 'Muestras',
         classCount: 'Clases',
         trainingStatus: 'Entrenamiento',
+        statusCompleted: 'Completado',
+        statusRunning: 'Entrenando',
+        statusFailed: 'Error',
+        statusBlocked: 'Bloqueado',
+        statusIdle: 'En espera',
         device: 'Dispositivo',
         bestF1: 'Mejor Macro F1',
         checkpoint: 'Checkpoint',
@@ -237,6 +243,11 @@ const TEXT = {
         samples: 'Samples',
         classCount: 'Classes',
         trainingStatus: 'Training',
+        statusCompleted: 'Completed',
+        statusRunning: 'Training',
+        statusFailed: 'Failed',
+        statusBlocked: 'Blocked',
+        statusIdle: 'Waiting',
         device: 'Device',
         bestF1: 'Best Macro F1',
         checkpoint: 'Checkpoint',
@@ -315,6 +326,11 @@ const TEXT = {
         samples: 'Amostras',
         classCount: 'Classes',
         trainingStatus: 'Treino',
+        statusCompleted: 'Concluído',
+        statusRunning: 'A treinar',
+        statusFailed: 'Erro',
+        statusBlocked: 'Bloqueado',
+        statusIdle: 'Em espera',
         device: 'Dispositivo',
         bestF1: 'Melhor Macro F1',
         checkpoint: 'Checkpoint',

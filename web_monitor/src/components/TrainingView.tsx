@@ -6,7 +6,53 @@ function pct(value: unknown) { return Number.isFinite(Number(value)) ? `${(Numbe
 function Kpi({ label, value, small }: { label: string; value: ReactNode; small?: boolean }) { return <div className="kpi"><span>{label}</span><strong className={small ? 'small' : ''}>{value}</strong></div>; }
 function Metric({ label, value }: { label: string; value: ReactNode }) { return <div className="metric"><span>{label}</span><strong>{value}</strong></div>; }
 
+const STATUS_LABEL_KEYS: Record<string, string> = {
+  completed: 'statusCompleted',
+  running: 'statusRunning',
+  failed: 'statusFailed',
+  blocked: 'statusBlocked',
+  idle: 'statusIdle',
+};
+
+function trainingStatus(listener: ListenerData | null, t: Labels) {
+  const raw = String(listener?.training_status || 'idle').trim().toLowerCase();
+  const labelKey = STATUS_LABEL_KEYS[raw];
+  return {
+    raw,
+    label: (labelKey && t[labelKey]) || listener?.training_status || t.noData,
+  };
+}
+
 export default function TrainingView({ listener, t }: { listener: ListenerData | null; t: Labels }) {
-  const report = listener?.dataset_report; const metrics = listener?.training_metrics || {}; const splits: Record<string, number> = report?.split_counts || {}; const total = Object.values(splits).reduce((sum, value) => sum + Number(value || 0), 0); const blockers = Array.isArray(listener?.training_blockers) ? listener.training_blockers : [];
-  return <section className="view"><div className="training-head"><div><h2>{t.trainingTitle}</h2><p>{t.trainingSubtitle}</p></div><span className="status-pill">{listener?.training_status || t.noData}</span></div>{blockers.length > 0 && <div className="box"><h2>Por qué no se inició</h2><ul>{blockers.map((blocker, index) => <li key={`${blocker}-${index}`}>{blocker}</li>)}</ul></div>}<div className="training-kpis"><Kpi label={t.dataset} value={report ? (report.ready ? 'Listo' : 'Bloqueado') : t.noDataset}/><Kpi label={t.samples} value={report?.generated_samples ?? 0}/><Kpi label={t.classCount} value={report?.required_classes?.length ?? 6}/><Kpi label={t.trainingStatus} value={listener?.training_status || t.noData}/><Kpi label={t.device} value={metrics.device || '—'}/><Kpi label={t.bestF1} value={pct(metrics.best_validation_macro_f1)}/><Kpi label={t.checkpoint} value={listener?.training_checkpoint || t.noData} small/></div><div className="training-layout"><div className="box"><h2>{t.performance}</h2><div className="metric-grid"><Metric label={t.valAccuracy} value={pct(metrics.validation?.accuracy)}/><Metric label={t.valF1} value={pct(metrics.validation?.macro_f1)}/><Metric label={t.testAccuracy} value={pct(metrics.test?.accuracy)}/><Metric label={t.testF1} value={pct(metrics.test?.macro_f1)}/></div><details><summary>{t.fullMetrics}</summary><pre className="pre">{json(metrics, t.noMetrics)}</pre></details></div><div className="box"><h2>{t.composition}</h2>{total ? Object.entries(splits).map(([name, count]) => <div className="split-row" key={name}><span>{name}</span><div className="split-track"><i style={{width: `${Math.max(4, Number(count) / total * 100)}%`}}/></div><strong>{count}</strong></div>) : <p className="muted">{t.noDataset}</p>}<p className="training-path">{report?.dataset_dir || ''}</p><details><summary>{t.fullReport}</summary><pre className="pre">{json(report, t.noDataset)}</pre></details></div></div><details className="training-log"><summary>{t.trainingLog}</summary><pre className="pre">{listener?.training_log_tail || t.noLog}</pre></details></section>;
+  const report = listener?.dataset_report;
+  const metrics = listener?.training_metrics || {};
+  const splits: Record<string, number> = report?.split_counts || {};
+  const total = Object.values(splits).reduce((sum, value) => sum + Number(value || 0), 0);
+  const blockers = Array.isArray(listener?.training_blockers) ? listener.training_blockers : [];
+  const status = trainingStatus(listener, t);
+
+  return <section className="view">
+    <div className="training-head">
+      <div><h2>{t.trainingTitle}</h2><p>{t.trainingSubtitle}</p></div>
+      <span className={`status-pill training-status training-status--${status.raw}`}>
+        <i aria-hidden="true" />
+        {status.label}
+      </span>
+    </div>
+    {blockers.length > 0 && <div className="box"><h2>Por qué no se inició</h2><ul>{blockers.map((blocker, index) => <li key={`${blocker}-${index}`}>{blocker}</li>)}</ul></div>}
+    <div className="training-kpis">
+      <Kpi label={t.dataset} value={report ? (report.ready ? 'Listo' : 'Bloqueado') : t.noDataset}/>
+      <Kpi label={t.samples} value={report?.generated_samples ?? 0}/>
+      <Kpi label={t.classCount} value={report?.required_classes?.length ?? 6}/>
+      <Kpi label={t.trainingStatus} value={status.label}/>
+      <Kpi label={t.device} value={metrics.device || '—'}/>
+      <Kpi label={t.bestF1} value={pct(metrics.best_validation_macro_f1)}/>
+      <Kpi label={t.checkpoint} value={listener?.training_checkpoint || t.noData} small/>
+    </div>
+    <div className="training-layout">
+      <div className="box"><h2>{t.performance}</h2><div className="metric-grid"><Metric label={t.valAccuracy} value={pct(metrics.validation?.accuracy)}/><Metric label={t.valF1} value={pct(metrics.validation?.macro_f1)}/><Metric label={t.testAccuracy} value={pct(metrics.test?.accuracy)}/><Metric label={t.testF1} value={pct(metrics.test?.macro_f1)}/></div><details><summary>{t.fullMetrics}</summary><pre className="pre">{json(metrics, t.noMetrics)}</pre></details></div>
+      <div className="box"><h2>{t.composition}</h2>{total ? Object.entries(splits).map(([name, count]) => <div className="split-row" key={name}><span>{name}</span><div className="split-track"><i style={{width: `${Math.max(4, Number(count) / total * 100)}%`}}/></div><strong>{count}</strong></div>) : <p className="muted">{t.noDataset}</p>}<p className="training-path">{report?.dataset_dir || ''}</p><details><summary>{t.fullReport}</summary><pre className="pre">{json(report, t.noDataset)}</pre></details></div>
+    </div>
+    <details className="training-log"><summary>{t.trainingLog}</summary><pre className="pre">{listener?.training_log_tail || t.noLog}</pre></details>
+  </section>;
 }
