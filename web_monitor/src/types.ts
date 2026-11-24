@@ -14,6 +14,7 @@ export interface Config {
   label_source: string;
   training_policy: string;
   min_training_seconds: number;
+  minimum_labeled_windows: number;
   transport: string;
 }
 
@@ -32,6 +33,8 @@ export interface ListenerData extends JsonObject {
   training_status?: string;
   training_checkpoint?: string;
   training_log_tail?: string;
+  training_report?: JsonObject;
+  training_blockers?: string[];
   stop_received?: boolean;
   stop_received_at?: number;
 }

@@ -70,6 +70,8 @@ export default function ConfigurationView({
             <Field label={t.transportLabel}><input disabled value={config.transport.toUpperCase()} readOnly/></Field>
             <Field label={t.minimum}><input type="number" min="5" max="600" step="5" value={config.min_training_seconds}
                                             onChange={(e: ChangeEvent<HTMLInputElement>) => change('min_training_seconds', Number(e.target.value))}/><small>{t.recommended}</small></Field>
+            <Field label={t.minimumWindows}><input type="number" min="3" max="600" step="1" value={config.minimum_labeled_windows}
+                                                  onChange={(e: ChangeEvent<HTMLInputElement>) => change('minimum_labeled_windows', Number(e.target.value))}/><small>mínimo técnico: 3 ventanas</small></Field>
         </div>
         <div className="box"><h2>{t.recommendedTitle}</h2><p>{t.transport}</p><p>{t.first}</p></div>
         <p className="fixed">{t.modelInput}</p>

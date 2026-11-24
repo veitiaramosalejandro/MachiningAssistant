@@ -25,6 +25,7 @@ interface Config {
     label_source: string;
     training_policy: string;
     min_training_seconds: number;
+    minimum_labeled_windows: number;
     transport: string;
 }
 
@@ -97,6 +98,7 @@ const DEFAULT_CONFIG: Config = {
     label_source: 'synthetic_audio_transform',
     training_policy: 'continuous_capture_then_batch',
     min_training_seconds: 600,
+    minimum_labeled_windows: 120,
     transport: 'tcp'
 };
 const TEXT = {
@@ -124,6 +126,7 @@ const TEXT = {
         continuous: 'Capturar continuamente y entrenar por lotes',
         captureOnly: 'Solo capturar',
         minimum: 'Duración mínima de captura',
+        minimumWindows: 'Ventanas mínimas para entrenar',
         recommended: 'Recomendado: 10 minutos · aproximadamente 120 ventanas.',
         recommendedTitle: 'Configuración recomendada para entrenamiento',
         transport: 'Transporte TCP · ventana 5 segundos · captura 10 minutos · entrada sonido + vibración + metadata CNC.',
@@ -201,6 +204,7 @@ const TEXT = {
         continuous: 'Capture continuously and train in batches',
         captureOnly: 'Capture only',
         minimum: 'Minimum capture duration',
+        minimumWindows: 'Minimum windows for training',
         recommended: 'Recommended: 10 minutes · approximately 120 windows.',
         recommendedTitle: 'Recommended training configuration',
         transport: 'TCP transport · 5-second window · 10-minute capture · sound + vibration + CNC metadata input.',
@@ -278,6 +282,7 @@ const TEXT = {
         continuous: 'Capturar continuamente e treinar em lotes',
         captureOnly: 'Apenas capturar',
         minimum: 'Duração mínima da captura',
+        minimumWindows: 'Janelas mínimas para treinar',
         recommended: 'Recomendado: 10 minutos · aproximadamente 120 janelas.',
         recommendedTitle: 'Configuração recomendada para treino',
         transport: 'Transporte TCP · janela de 5 segundos · captura de 10 minutos · entrada de som + vibração + metadados CNC.',
@@ -656,9 +661,17 @@ function App() {
     };
     const train = () => start('/api/rtsp-training/train', {
         listener_id: selectedListenerId,
+        minimum_labeled_windows: config.minimum_labeled_windows,
         epochs: 60,
         device: 'auto'
-    }, operationText('train'), false).then((result) => { if (result) setTab('training'); });
+    }, operationText('train'), false).then(async (result) => {
+        if (!result) return;
+        // The train endpoint returns a report, not a complete listener state.
+        // Reload the listener so dataset_report, blockers and training status
+        // are visible in the training tab immediately.
+        await refresh(selectedListenerId);
+        setTab('training');
+    });
     const changeLanguage = (value: string) => {
         if (!(value in TEXT)) return;
         const selected = value as Language;

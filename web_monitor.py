@@ -129,6 +129,10 @@ def _socket_listener_public(job: dict) -> dict:
             job["training_checkpoint"] = str(checkpoint) if checkpoint.is_file() else None
     result["training_status"] = job.get("training_status", "idle")
     result["training_checkpoint"] = job.get("training_checkpoint")
+    training_request_path = Path(str(job.get("training_request_output", "")))
+    training_report = _read_json_file(training_request_path, {}) if training_request_path.is_file() else {}
+    result["training_report"] = training_report
+    result["training_blockers"] = training_report.get("blockers", []) if isinstance(training_report, dict) else []
     result["training_gate"] = {
         "stop_received": stop_received,
         "can_request_batch": stop_received,
@@ -226,12 +230,23 @@ def _rtsp_credentials(payload: dict) -> tuple[str, str]:
     return username.strip(), password
 
 
+def _minimum_labeled_windows(value: object, default: int = 120) -> int:
+    try:
+        windows = int(default if value is None else value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("minimum_labeled_windows debe ser un entero") from exc
+    if not 3 <= windows <= 600:
+        raise ValueError("minimum_labeled_windows debe estar entre 3 y 600 ventanas")
+    return windows
+
+
 def validate_rtsp_training_source(payload: dict) -> dict:
     """Validate the configuration and data already received through the socket."""
     if str(payload.get("model_family", "CNN1D-VAE")) != "CNN1D-VAE":
         raise ValueError("Esta fase de pruebas está reservada para CNN1D-VAE")
     if int(payload.get("audio_window_seconds", 5)) != 5:
         raise ValueError("La ventana socket debe ser de 5 segundos")
+    requested_windows = _minimum_labeled_windows(payload.get("minimum_labeled_windows"), 120)
 
     listener_id = str(payload.get("listener_id", "") or "").strip()
     if listener_id:
@@ -261,7 +276,7 @@ def validate_rtsp_training_source(payload: dict) -> dict:
         "model_family": status.get("model_family", "CNN1D-VAE"),
         "training_policy": status.get("training_policy", "continuous_capture_then_batch"),
         "min_training_seconds": int(status.get("min_training_seconds", 600)),
-        "minimum_labeled_windows": int(status.get("minimum_labeled_windows", 120)),
+        "minimum_labeled_windows": requested_windows,
         "checkpoint_contract": checkpoint_contract,
     }
     return {
@@ -341,9 +356,11 @@ def start_rtsp_listener(payload: dict) -> dict:
     if training_policy not in {"continuous_capture_then_batch", "capture_only"}:
         raise ValueError("training_policy no está permitido")
     legacy_windows = payload.get("min_labeled_windows")
+    configured_windows = payload.get("minimum_labeled_windows", legacy_windows)
     min_training_seconds = int(payload.get("min_training_seconds", (int(legacy_windows) * 5 if legacy_windows is not None else 600)))
     if not 5 <= min_training_seconds <= 600:
         raise ValueError("min_training_seconds debe estar entre 5 segundos y 600 segundos")
+    minimum_labeled_windows = _minimum_labeled_windows(configured_windows, (min_training_seconds + 4) // 5)
     checkpoint = _latest_rtsp_checkpoint() or Path(setting("MACHINING_CHECKPOINT", "")).expanduser().resolve()
     if not checkpoint.is_file():
         raise FileNotFoundError("MACHINING_CHECKPOINT no está configurado o no existe")
@@ -394,7 +411,7 @@ def start_rtsp_listener(payload: dict) -> dict:
         "listener_id": session_id, "status": "starting", "pid": process.pid,
         "rtsp_url": redacted, "transport": transport, "model_family": "CNN1D-VAE",
         "training_policy": training_policy, "min_training_seconds": min_training_seconds,
-        "minimum_labeled_windows": (min_training_seconds + 4) // 5,
+        "minimum_labeled_windows": minimum_labeled_windows,
         "training_ready": False, "labeled_windows": 0,
         "checkpoint_contract": checkpoint_contract,
         "output": str(output), "metadata_output": str(metadata_output), "log": str(log_path),
@@ -1081,6 +1098,13 @@ def request_rtsp_training(payload: dict) -> dict:
         job = _rtsp_listener_jobs.get(listener_id)
         if job is None:
             raise FileNotFoundError("No existe la sesión RTSP solicitada")
+    minimum_windows = _minimum_labeled_windows(
+        payload.get("minimum_labeled_windows"),
+        int(job.get("minimum_labeled_windows", 120)),
+    )
+    # The socket producer owns capture; this setting controls only the batch
+    # gate for the current training request.
+    job["minimum_labeled_windows"] = minimum_windows
     blockers = []
     if job.get("ingestion_mode") == "machining_monitor_socket":
         if job.get("status") not in {"stopped", "completed"}:
@@ -1088,9 +1112,9 @@ def request_rtsp_training(payload: dict) -> dict:
         aligned_rows = _read_json_lines(Path(str(job.get("aligned_training_output", ""))))
         if not aligned_rows:
             blockers.append("El socket todavía no ha producido ventanas completas de audio")
-        elif len(aligned_rows) < int(job.get("minimum_labeled_windows", 120)):
+        elif len(aligned_rows) < minimum_windows:
             blockers.append(
-                f"Se requieren al menos {int(job.get('minimum_labeled_windows', 120))} ventanas de audio; "
+                f"Se requieren al menos {minimum_windows} ventanas de audio; "
                 f"solo hay {len(aligned_rows)}"
             )
         elif any(not isinstance(row.get("context"), dict) for row in aligned_rows):
@@ -1119,6 +1143,7 @@ def request_rtsp_training(payload: dict) -> dict:
     contract = job.get("checkpoint_contract", {})
     report = {"accepted": False, "status": "blocked", "listener_id": listener_id,
               "requested_at": time.time(), "blockers": blockers,
+              "minimum_labeled_windows": minimum_windows,
               "labeled_windows": job.get("labeled_windows", 0),
               "labeled_duration_seconds": job.get("labeled_duration_seconds", 0),
               "aligned_training_output": job.get("aligned_training_output"),
