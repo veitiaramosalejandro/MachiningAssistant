@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import threading
+import tempfile
 import time
 import wave
 from typing import Any
@@ -271,9 +272,30 @@ class SocketTrainingBridge:
     def _write_status(job: dict[str, Any]) -> None:
         path = Path(job["metadata_output"])
         safe = {key: value for key, value in job.items() if key != "pending_audio"}
-        temporary = path.with_suffix(path.suffix + ".tmp")
-        temporary.write_text(json.dumps(safe, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-        temporary.replace(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_name: str | None = None
+        try:
+            # A unique temporary file avoids collisions with a reader or with
+            # another status write on Windows. The target is replaced only
+            # after the complete JSON document has been closed.
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=path.parent,
+                prefix=f"{path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                temporary_name = handle.name
+                handle.write(json.dumps(safe, ensure_ascii=False, indent=2, allow_nan=False) + "\n")
+            os.replace(temporary_name, path)
+            temporary_name = None
+        finally:
+            if temporary_name:
+                try:
+                    Path(temporary_name).unlink(missing_ok=True)
+                except OSError:
+                    pass
 
 
 __all__ = ["SocketTrainingBridge"]

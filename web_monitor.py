@@ -939,6 +939,8 @@ def request_rtsp_training(payload: dict) -> dict:
             raise FileNotFoundError("No existe la sesión RTSP solicitada")
     blockers = []
     if job.get("ingestion_mode") == "machining_monitor_socket":
+        if job.get("status") not in {"stopped", "completed"}:
+            blockers.append("El entrenamiento solo puede iniciar después de recibir analysis.stop")
         aligned_rows = _read_json_lines(Path(str(job.get("aligned_training_output", ""))))
         if not aligned_rows:
             blockers.append("El socket todavía no ha producido ventanas completas de audio")

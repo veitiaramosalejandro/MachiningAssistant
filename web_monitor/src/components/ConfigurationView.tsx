@@ -5,8 +5,9 @@ import './select.css';
 
 function Field({ label, children }: FieldProps) { return <label className="field">{label}{children}</label>; }
 
-export default function ConfigurationView({ config, setConfig, listenerId, t, log, setLog, onValidate, onConnect, onDisconnect, onTrain, busy }: ConfigurationProps) {
+export default function ConfigurationView({ config, setConfig, listenerId, listenerStatus, t, log, setLog, onValidate, onConnect, onDisconnect, onTrain, busy }: ConfigurationProps) {
   const change = (key: keyof Config, value: Config[keyof Config]) => setConfig((current) => ({ ...current, [key]: value }));
+  const canTrain = Boolean(listenerId) && ['stopped', 'completed'].includes(String(listenerStatus || '')) && !busy;
   const save = () => { const safe = { ...config, rtsp_password: undefined }; localStorage.setItem('rtspTrainingConfig', JSON.stringify(safe)); setLog('Configuración guardada. La contraseña no se persiste.'); };
   const reset = () => setConfig(config => ({ ...config, rtsp_url: 'rtsp://127.0.0.1:8555/audio', rtsp_username: '', rtsp_password: '', probe_timeout_seconds: 30, min_training_seconds: 600 }));
   const seconds = t.language === 'Language' ? 'seconds' : 'segundos';
@@ -23,6 +24,6 @@ export default function ConfigurationView({ config, setConfig, listenerId, t, lo
      <Field label={t.transportLabel}><input disabled value={config.transport.toUpperCase()} readOnly /></Field>
     <Field label={t.minimum}><input type="number" min="5" max="600" step="5" value={config.min_training_seconds} onChange={(e: ChangeEvent<HTMLInputElement>) => change('min_training_seconds', Number(e.target.value))} /><small>{t.recommended}</small></Field>
   </div><div className="box"><h2>{t.recommendedTitle}</h2><p>{t.transport}</p><p>{t.first}</p></div><p className="fixed">{t.modelInput}</p><div className="buttons">
-    <button disabled={Boolean(busy)} onClick={save}>{t.save}</button><button disabled={Boolean(busy)} onClick={reset}>{t.reset}</button><button className="primary" disabled={Boolean(busy)} onClick={onValidate}>{t.validate}</button><button className="primary" disabled={Boolean(listenerId) || Boolean(busy)} onClick={onConnect}>{t.connect}</button><button disabled={!listenerId || Boolean(busy)} onClick={onDisconnect}>{t.disconnect}</button><button disabled={!listenerId || Boolean(busy)} onClick={onTrain}>{t.train}</button>
-  </div><pre className="log">{log}</pre></section>;
+    <button disabled={Boolean(busy)} onClick={save}>{t.save}</button><button disabled={Boolean(busy)} onClick={reset}>{t.reset}</button><button className="primary" disabled={Boolean(busy)} onClick={onValidate}>{t.validate}</button><button className="primary" disabled={Boolean(listenerId) || Boolean(busy)} onClick={onConnect}>{t.connect}</button><button disabled={!listenerId || Boolean(busy)} onClick={onDisconnect}>{t.disconnect}</button><button disabled={!canTrain} onClick={onTrain}>{t.train}</button>
+  </div><p className="muted" role="status">{canTrain ? 'analysis.stop recibido: el lote puede generarse.' : listenerId ? `Esperando analysis.stop. Estado actual: ${listenerStatus || 'desconocido'}.` : 'Conecte una sesión para habilitar el entrenamiento.'}</p><pre className="log">{log}</pre></section>;
 }
