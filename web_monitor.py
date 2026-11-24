@@ -6,7 +6,6 @@ explicitly requested recording imports and training jobs.
 """
 from __future__ import annotations
 
-import asyncio
 import csv
 import hashlib
 import json
@@ -29,12 +28,6 @@ from persistence import persist_import, persist_training
 from persistence import training_history as storage_training_history
 from Integration.rtsp_cnc_metadata import StreamCncMetadata, build_stream_feature_vector
 from Integration.rtsp_training_dataset import build_rtsp_dataset
-from Integration.machining_monitor_socket import (
-    DEFAULT_CERTIFICATE,
-    DEFAULT_PRIVATE_KEY,
-    MachiningMonitorSocketServer,
-)
-from Integration.socket_training_bridge import SocketTrainingBridge
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -92,70 +85,29 @@ _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
 _rtsp_listener_jobs: dict[str, dict] = {}
 _rtsp_listener_lock = threading.Lock()
-_socket_training_bridge: SocketTrainingBridge | None = None
-_socket_server_thread: threading.Thread | None = None
-
-
-def _socket_start(payload: dict) -> str:
-    if _socket_training_bridge is None:
-        raise RuntimeError("El socket de integración no está iniciado")
-    state = _socket_training_bridge.on_start(payload)
-    session_id = str(payload["sessionId"])
-    bridge_status = _socket_training_bridge.status(session_id)
-    checkpoint = _latest_rtsp_checkpoint() or Path(setting("MACHINING_CHECKPOINT", "")).expanduser().resolve()
-    with _rtsp_listener_lock:
-        _rtsp_listener_jobs[session_id] = {
-            **bridge_status,
-            "ingestion_mode": "machining_monitor_socket",
-            "model_family": "CNN1D-VAE",
-            "training_policy": "continuous_capture_then_batch",
-            "min_training_seconds": 5,
-            "minimum_labeled_windows": 1,
-            "training_ready": False,
-            "labeled_windows": 0,
-            "checkpoint_contract": _checkpoint_contract(checkpoint) if checkpoint.is_file() else {},
-            "checkpoint": str(checkpoint) if checkpoint.is_file() else None,
-            "training_request_output": str(Path(bridge_status["session_dir"]) / "training_request.json"),
-            "training_status": "idle",
-            "training_process": None,
-            "training_output": None,
-            "training_log": None,
-            "training_checkpoint": None,
-        }
-    return state
-
-
-def _socket_data(payload: dict) -> str:
-    if _socket_training_bridge is None:
-        raise RuntimeError("El socket de integración no está iniciado")
-    return _socket_training_bridge.on_data(payload)
-
-
-def _socket_stop(payload: dict) -> str:
-    if _socket_training_bridge is None:
-        raise RuntimeError("El socket de integración no está iniciado")
-    state = _socket_training_bridge.on_stop(payload)
-    session_id = str(payload["sessionId"])
-    with _rtsp_listener_lock:
-        job = _rtsp_listener_jobs.get(session_id)
-        if job is not None:
-            job["status"] = "stopped"
-    return state
-
-
-def _socket_audio(chunk: dict) -> None:
-    if _socket_training_bridge is not None:
-        _socket_training_bridge.on_audio(chunk)
+SOCKET_TRAINING_ROOT = PROJECT_ROOT / "runs" / "rtsp" / "web_sessions"
+SOCKET_MODEL_CLASS_NAMES = ("excellent", "good", "sufficient", "bad", "very_bad", "broken")
+SOCKET_CONTEXT_FEATURES = (
+    "ProgrammedRpm", "SpindleAdjustmentPercent", "AdjustedRpm",
+    "ProgrammedMmPerMin", "FeedAdjustmentPercent", "AdjustedMmPerMin", "ToolDiameterMm",
+)
 
 
 def _socket_listener_public(job: dict) -> dict:
-    if _socket_training_bridge is not None:
-        status = _socket_training_bridge.status(str(job["listener_id"]))
-        job.update(status)
+    metadata_path = Path(str(job.get("metadata_output", "")))
+    if not metadata_path.is_file():
+        metadata_path = Path(str(job.get("session_dir", ""))) / "socket_session.metadata.json"
+    metadata = _read_json_file(metadata_path, {}) if metadata_path.is_file() else {}
+    if isinstance(metadata, dict):
+        for key, value in metadata.items():
+            if key != "pending_audio":
+                job[key] = value
     result = {key: value for key, value in job.items() if key != "pending_audio"}
     aligned = Path(str(job.get("aligned_training_output", "")))
     rows = _read_json_lines(aligned) if aligned.is_file() else []
     result["observed_windows"] = len(rows)
+    result["minimum_labeled_windows"] = int(job.get("minimum_labeled_windows", 120))
+    result["min_training_seconds"] = int(job.get("min_training_seconds", 600))
     result["labeled_windows"] = 0
     result["training_ready"] = False
     result["metadata_events"] = sum(1 for row in rows if row.get("events"))
@@ -179,39 +131,6 @@ def _socket_listener_public(job: dict) -> dict:
     training_log = Path(str(job.get("training_log", "")))
     result["training_log_tail"] = training_log.read_text(encoding="utf-8", errors="replace")[-12000:] if training_log.is_file() else ""
     return result
-
-
-def _start_socket_integration() -> None:
-    """Start the Analyzer TLS endpoint beside the web monitor."""
-    global _socket_training_bridge, _socket_server_thread
-    enabled = setting("MACHINING_ANALYZER_SOCKET_ENABLED", "true").lower() in {"1", "true", "yes"}
-    if not enabled or _socket_server_thread is not None:
-        return
-    host = setting("MACHINING_ANALYZER_SOCKET_HOST", "127.0.0.1")
-    port = int(setting("MACHINING_ANALYZER_SOCKET_PORT", "7444"))
-    certificate = Path(setting("MACHINING_ANALYZER_SOCKET_CERTIFICATE", str(DEFAULT_CERTIFICATE)))
-    private_key = Path(setting("MACHINING_ANALYZER_SOCKET_PRIVATE_KEY", str(DEFAULT_PRIVATE_KEY)))
-    _socket_training_bridge = SocketTrainingBridge(PROJECT_ROOT / "runs" / "rtsp" / "socket_sessions", print)
-
-    def run() -> None:
-        try:
-            server = MachiningMonitorSocketServer(
-                host=host,
-                port=port,
-                certificate_file=certificate,
-                private_key_file=private_key,
-                on_start=_socket_start,
-                on_data=_socket_data,
-                on_stop=_socket_stop,
-                on_audio=_socket_audio,
-                logger=print,
-            )
-            asyncio.run(server.serve_forever())
-        except Exception as exc:
-            print(f"Analyzer socket integration unavailable: {exc}", flush=True)
-
-    _socket_server_thread = threading.Thread(target=run, name="machining-analyzer-socket", daemon=True)
-    _socket_server_thread.start()
 
 
 def _safe_rtsp_url(value: object) -> tuple[str, str]:
@@ -262,72 +181,74 @@ def _rtsp_credentials(payload: dict) -> tuple[str, str]:
 
 
 def validate_rtsp_training_source(payload: dict) -> dict:
-    """Probe audio and metadata tracks without starting capture or training."""
+    """Validate the configuration and data already received through the socket."""
     if str(payload.get("model_family", "CNN1D-VAE")) != "CNN1D-VAE":
         raise ValueError("Esta fase de pruebas está reservada para CNN1D-VAE")
     if int(payload.get("audio_window_seconds", 5)) != 5:
-        raise ValueError("La ventana RTSP inicial debe ser de 5 segundos")
-    if str(payload.get("label_source", "synthetic_audio_transform")) not in {"synthetic_audio_transform", "metadata_event", "manual_review"}:
-        raise ValueError("label_source no está permitido")
-    source, redacted = _safe_rtsp_url(payload.get("rtsp_url", "rtsp://127.0.0.1:8555/audio"))
-    parts = urlsplit(source)
-    username, password = _rtsp_credentials(payload)
-    if username or password:
-        if not username or not password:
-            raise ValueError("rtsp_username y rtsp_password deben recibirse juntos")
-        source = urlunsplit((parts.scheme, f"{quote(username, safe='')}:{quote(password, safe='*')}@{parts.hostname}{f':{parts.port}' if parts.port else ''}", parts.path, parts.query, ""))
-    source = _prefer_ipv4_loopback(source)
-    timeout_s = int(payload.get("probe_timeout_seconds", 15))
-    if timeout_s not in {5, 10, 15, 30}:
-        raise ValueError("probe_timeout_seconds no está entre las opciones permitidas")
-    command = [
-        FFPROBE, "-hide_banner", "-v", "error", "-rtsp_transport", "tcp",
-        # Do not leave the RTSP socket blocked until the outer subprocess
-        # timeout. FFmpeg expects this value in microseconds.
-        "-rw_timeout", str(timeout_s * 1_000_000),
-        "-show_streams", "-show_format", "-of", "json", source,
-    ]
-    started = time.time()
-    try:
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=timeout_s, check=False)
-    except FileNotFoundError as exc:
-        raise RuntimeError("ffprobe no está disponible; configure MACHINING_FFPROBE") from exc
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"La comprobación RTSP superó {timeout_s} segundos") from exc
-    if completed.returncode != 0:
-        detail = (completed.stderr or "").strip()[-500:]
-        raise RuntimeError(f"ffprobe no pudo abrir la fuente RTSP: {(detail or 'error desconocido').replace(source, redacted)}")
-    try:
-        report = json.loads(completed.stdout or "{}")
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("ffprobe devolvió una respuesta no válida") from exc
-    streams = report.get("streams", []) if isinstance(report, dict) else []
-    audio = [item for item in streams if item.get("codec_type") == "audio"]
-    metadata = [
-        item for item in streams
-        if item.get("codec_type") in {"data", "unknown"}
-        or str(item.get("codec_name", "")).lower() == "x-machining-metadata"
-        or "machining" in json.dumps(item, ensure_ascii=False).lower()
-    ]
-    public_streams = []
-    for item in streams:
-        public_streams.append({
-            "index": item.get("index"), "codec_type": item.get("codec_type"),
-            "codec_name": item.get("codec_name"), "sample_rate": item.get("sample_rate"),
-            "channels": item.get("channels"), "channel_layout": item.get("channel_layout"),
-            "tags": item.get("tags", {}),
-        })
+        raise ValueError("La ventana socket debe ser de 5 segundos")
+
+    listener_id = str(payload.get("listener_id", "") or "").strip()
+    if listener_id:
+        job = _socket_job_from_disk(listener_id)
+    else:
+        active = active_rtsp_listener_status()
+        listener_id = str(active.get("listener_id", ""))
+        job = _socket_job_from_disk(listener_id) if active.get("ingestion_mode") == "machining_monitor_socket" else None
+    if job is None:
+        raise RuntimeError("No hay una sesión del socket activa con configuración recibida")
+
+    status = _socket_listener_public(job)
+    checkpoint_contract = status.get("checkpoint_contract", {})
+    latest_context = status.get("latest_context")
+    audio_chunks = int(status.get("audio_chunks", 0))
+    audio_windows = int(status.get("observed_windows", 0))
+    metadata_messages = int(status.get("metadata_messages", 0))
+    audio_received = audio_chunks > 0 or audio_windows > 0
+    metadata_received = metadata_messages > 0 or isinstance(latest_context, dict)
+    context_valid = isinstance(latest_context, dict) and not status.get("latest_context_error")
+    socket_configuration = {
+        "listener_id": listener_id,
+        "status": status.get("status"),
+        "pid": status.get("pid"),
+        "rtsp_url": status.get("rtsp_url"),
+        "transport": status.get("transport", "tcp"),
+        "model_family": status.get("model_family", "CNN1D-VAE"),
+        "training_policy": status.get("training_policy", "continuous_capture_then_batch"),
+        "min_training_seconds": int(status.get("min_training_seconds", 600)),
+        "minimum_labeled_windows": int(status.get("minimum_labeled_windows", 120)),
+        "checkpoint_contract": checkpoint_contract,
+    }
     return {
-        "ok": bool(audio and metadata),
-        "rtsp_url": redacted,
-        "checked_in_seconds": round(time.time() - started, 3),
-        "model_family": "CNN1D-VAE",
-        "audio_track_detected": bool(audio),
-        "metadata_track_detected": bool(metadata),
-        "metadata_contract": "x-machining-metadata / MAM1 framed JSON",
-        "audio_expectations": {"sample_rate_hz": 44100, "channels": 2, "pcm": "PCM16LE"},
-        "streams": public_streams,
-        "next_step": "La captura debe persistir audio, metadata y etiquetas alineadas antes de iniciar el entrenamiento." if audio and metadata else "La fuente no expone simultáneamente audio y metadata; no se puede preparar un dataset multimodal.",
+        "ok": bool(audio_received and metadata_received and context_valid),
+        "validation_source": "machining_monitor_socket",
+        "listener_id": listener_id,
+        "rtsp_url": status.get("rtsp_url"),
+        "model_family": status.get("model_family", "CNN1D-VAE"),
+        "socket_configuration": socket_configuration,
+        "received_configuration": socket_configuration,
+        "audio": {
+            "received": audio_received,
+            "chunks": audio_chunks,
+            "bytes": int(status.get("audio_bytes_received", 0)),
+            "complete_windows": audio_windows,
+            "sample_rate_hz": 44100,
+            "channels": 2,
+            "pcm": "PCM16LE",
+        },
+        "metadata": {
+            "received": metadata_received,
+            "messages": metadata_messages,
+            "latest_context": latest_context,
+            "context_valid": context_valid,
+            "context_error": status.get("latest_context_error"),
+        },
+        "training_ready": bool(status.get("training_ready", False)),
+        "next_step": (
+            "Audio y metadata del socket recibidos correctamente; puede continuar la captura hasta alcanzar "
+            f"{socket_configuration['minimum_labeled_windows']} ventanas."
+            if audio_received and metadata_received and context_valid else
+            "El socket todavía no ha recibido audio y contexto CNC válidos simultáneamente."
+        ),
     }
 
 
@@ -362,7 +283,7 @@ def start_rtsp_listener(payload: dict) -> dict:
     if training_policy not in {"continuous_capture_then_batch", "capture_only"}:
         raise ValueError("training_policy no está permitido")
     legacy_windows = payload.get("min_labeled_windows")
-    min_training_seconds = int(payload.get("min_training_seconds", (int(legacy_windows) * 5 if legacy_windows is not None else 5)))
+    min_training_seconds = int(payload.get("min_training_seconds", (int(legacy_windows) * 5 if legacy_windows is not None else 600)))
     if not 5 <= min_training_seconds <= 600:
         raise ValueError("min_training_seconds debe estar entre 5 segundos y 600 segundos")
     checkpoint = _latest_rtsp_checkpoint() or Path(setting("MACHINING_CHECKPOINT", "")).expanduser().resolve()
@@ -702,6 +623,46 @@ def _rtsp_stream_observation(job: dict) -> dict:
     }
 
 
+def _socket_job_from_disk(session_id: str) -> dict | None:
+    if not session_id or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for ch in session_id):
+        return None
+    session_dir = SOCKET_TRAINING_ROOT / session_id
+    metadata_path = session_dir / "session.metadata.json"
+    metadata = _read_json_file(metadata_path, {})
+    if not metadata:
+        metadata = _read_json_file(session_dir / "socket_session.metadata.json", {})
+    if not isinstance(metadata, dict) or not metadata:
+        return None
+    checkpoint = _latest_rtsp_checkpoint() or Path(setting("MACHINING_CHECKPOINT", "")).expanduser().resolve()
+    default_contract = {
+        "model_family": "CNN1D-VAE",
+        "task": "classification",
+        "context_contract": "rtsp_stream",
+        "context_dim": 7,
+        "context_features": list(SOCKET_CONTEXT_FEATURES),
+        "class_names": list(SOCKET_MODEL_CLASS_NAMES),
+    }
+    metadata.update({
+        "listener_id": session_id,
+        "ingestion_mode": "machining_monitor_socket",
+        "model_family": "CNN1D-VAE",
+        "training_policy": "continuous_capture_then_batch",
+        "min_training_seconds": int(metadata.get("min_training_seconds", 600)),
+        "minimum_labeled_windows": int(metadata.get("minimum_labeled_windows", 120)),
+        "training_ready": False,
+        "labeled_windows": 0,
+        "checkpoint_contract": _checkpoint_contract(checkpoint) if checkpoint.is_file() else default_contract,
+        "checkpoint": str(checkpoint) if checkpoint.is_file() else None,
+        "training_request_output": str(session_dir / "training_request.json"),
+        "training_status": "idle",
+        "training_process": None,
+        "training_output": None,
+        "training_log": None,
+        "training_checkpoint": None,
+    })
+    return metadata
+
+
 def _rtsp_listener_public(job: dict) -> dict:
     if job.get("ingestion_mode") == "machining_monitor_socket":
         return _socket_listener_public(job)
@@ -771,7 +732,10 @@ def rtsp_listener_status(listener_id: str) -> dict:
     with _rtsp_listener_lock:
         job = _rtsp_listener_jobs.get(listener_id)
         if job is None:
-            raise FileNotFoundError("No existe la sesión RTSP solicitada")
+            job = _socket_job_from_disk(listener_id)
+            if job is None:
+                raise FileNotFoundError("No existe la sesión RTSP solicitada")
+            _rtsp_listener_jobs[listener_id] = job
         return _rtsp_listener_public(job)
 
 
@@ -786,6 +750,18 @@ def active_rtsp_listener_status() -> dict:
                 result = _rtsp_listener_public(job)
                 result["active"] = True
                 return result
+        socket_sessions = sorted(
+            (path for path in SOCKET_TRAINING_ROOT.iterdir() if path.is_dir()),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        ) if SOCKET_TRAINING_ROOT.is_dir() else []
+        for session_dir in socket_sessions:
+            job = _socket_job_from_disk(session_dir.name)
+            if job is not None and job.get("status") not in {"stopped", "completed"}:
+                _rtsp_listener_jobs[session_dir.name] = job
+                result = _rtsp_listener_public(job)
+                result["active"] = True
+                return result
     return {"active": False, "listener_id": None}
 
 
@@ -795,7 +771,14 @@ def stop_rtsp_listener(listener_id: str) -> dict:
     with _rtsp_listener_lock:
         job = _rtsp_listener_jobs.get(listener_id)
         if job is None:
-            raise FileNotFoundError("No existe la sesión RTSP solicitada")
+            job = _socket_job_from_disk(listener_id)
+            if job is None:
+                raise FileNotFoundError("No existe la sesión RTSP solicitada")
+            _rtsp_listener_jobs[listener_id] = job
+        if job.get("ingestion_mode") == "machining_monitor_socket":
+            result = _socket_listener_public(job)
+            result["stop_control"] = "MachiningMonitor debe cerrar la sesión del Analyzer"
+            return result
         process = job.get("process")
         metadata_process = job.get("metadata_process")
         if process is not None and process.poll() is None:
@@ -855,6 +838,11 @@ def request_rtsp_training(payload: dict) -> dict:
         aligned_rows = _read_json_lines(Path(str(job.get("aligned_training_output", ""))))
         if not aligned_rows:
             blockers.append("El socket todavía no ha producido ventanas completas de audio")
+        elif len(aligned_rows) < int(job.get("minimum_labeled_windows", 120)):
+            blockers.append(
+                f"Se requieren al menos {int(job.get('minimum_labeled_windows', 120))} ventanas de audio; "
+                f"solo hay {len(aligned_rows)}"
+            )
         elif any(not isinstance(row.get("context"), dict) for row in aligned_rows):
             blockers.append("Hay ventanas de audio sin un contexto rtsp_stream válido")
     elif int(job.get("metadata_events", 0)) == 0 and int(job.get("metadata_snapshots", 0)) == 0:
@@ -2069,7 +2057,6 @@ def main() -> int:
         raise SystemExit(f"Missing web assets: {WEB_ROOT}")
     print(f"Machining Assistant monitor: http://{args.host}:{args.port}", flush=True)
     print(f"MachiningMonitor API: {SERVICE_URL}; data root: {DATA_ROOT}", flush=True)
-    _start_socket_integration()
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
     return 0
 

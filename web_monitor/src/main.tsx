@@ -120,6 +120,7 @@ const TEXT = {
         window: 'Ventana de audio',
         classes: 'Clases sintéticas',
         policy: 'Política de captura',
+        transportLabel: 'Transporte recibido por socket',
         continuous: 'Capturar continuamente y entrenar por lotes',
         captureOnly: 'Solo capturar',
         minimum: 'Duración mínima de captura',
@@ -193,6 +194,7 @@ const TEXT = {
         window: 'Audio window',
         classes: 'Synthetic classes',
         policy: 'Capture policy',
+        transportLabel: 'Transport received by socket',
         continuous: 'Capture continuously and train in batches',
         captureOnly: 'Capture only',
         minimum: 'Minimum capture duration',
@@ -266,6 +268,7 @@ const TEXT = {
         window: 'Janela de áudio',
         classes: 'Classes sintéticas',
         policy: 'Política de captura',
+        transportLabel: 'Transporte recebido pelo socket',
         continuous: 'Capturar continuamente e treinar em lotes',
         captureOnly: 'Apenas capturar',
         minimum: 'Duração mínima da captura',
@@ -562,7 +565,20 @@ function App() {
         };
         return messages[language][key];
     };
-    const validate = () => start('/api/rtsp-training/validate', config, operationText('validate')).then((result) => { if (result) setTab('stream'); });
+    const validate = () => start('/api/rtsp-training/validate', {...config, listener_id: listenerId}, operationText('validate')).then((result) => {
+        if (!result) return;
+        const received = result.received_configuration as JsonObject | undefined;
+        if (received) {
+            setConfig(current => ({
+                ...current,
+                rtsp_url: typeof received.rtsp_url === 'string' ? received.rtsp_url : current.rtsp_url,
+                transport: typeof received.transport === 'string' ? received.transport : current.transport,
+                training_policy: typeof received.training_policy === 'string' ? received.training_policy : current.training_policy,
+                min_training_seconds: Number(received.min_training_seconds ?? current.min_training_seconds),
+            }));
+        }
+        setTab('stream');
+    });
     const connect = () => start('/api/rtsp-training/listener/start', config, operationText('connect')).then((result) => { if (result) setTab('stream'); });
     const disconnect = async () => {
         await start('/api/rtsp-training/listener/stop', {listener_id: listenerId}, operationText('disconnect'));

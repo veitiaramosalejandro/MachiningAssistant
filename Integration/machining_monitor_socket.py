@@ -616,6 +616,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--audio-transport", choices=("tcp", "udp"), default="tcp")
     parser.add_argument("--audio-chunk-ms", type=int, default=DEFAULT_AUDIO_CHUNK_MS)
     parser.add_argument(
+        "--training-root",
+        type=Path,
+        default=PROJECT_ROOT / "runs" / "rtsp" / "web_sessions",
+        help="Directory where socket audio/context sessions are persisted",
+    )
+    parser.add_argument(
         "--certificate",
         type=Path,
         default=DEFAULT_CERTIFICATE,
@@ -631,6 +637,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 async def _run_server(args: argparse.Namespace) -> None:
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    from Integration.socket_training_bridge import SocketTrainingBridge
+
+    bridge = SocketTrainingBridge(args.training_root, print, transport=args.audio_transport)
     server = MachiningMonitorSocketServer(
         host=args.host,
         port=args.port,
@@ -639,6 +650,10 @@ async def _run_server(args: argparse.Namespace) -> None:
         ffmpeg=args.ffmpeg,
         audio_transport=args.audio_transport,
         audio_chunk_ms=args.audio_chunk_ms,
+        on_start=bridge.on_start,
+        on_data=bridge.on_data,
+        on_stop=bridge.on_stop,
+        on_audio=bridge.on_audio,
         logger=print,
     )
     try:
