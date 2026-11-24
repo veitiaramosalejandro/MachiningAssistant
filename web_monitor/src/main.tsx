@@ -645,6 +645,7 @@ function App() {
                 transport: typeof received.transport === 'string' ? received.transport : current.transport,
                 training_policy: typeof received.training_policy === 'string' ? received.training_policy : current.training_policy,
                 min_training_seconds: Number(received.min_training_seconds ?? current.min_training_seconds),
+                minimum_labeled_windows: Number(received.minimum_labeled_windows ?? current.minimum_labeled_windows),
             }));
         }
         setTab('stream');
@@ -666,9 +667,14 @@ function App() {
         device: 'auto'
     }, operationText('train'), false).then(async (result) => {
         if (!result) return;
-        // The train endpoint returns a report, not a complete listener state.
-        // Reload the listener so dataset_report, blockers and training status
-        // are visible in the training tab immediately.
+        setListener(current => current && current.listener_id === result.listener_id ? {
+            ...current,
+            minimum_labeled_windows: result.minimum_labeled_windows,
+            training_report: result,
+            training_blockers: result.blockers ?? [],
+            dataset_report: result.dataset_report,
+            training_status: result.accepted ? result.status : 'blocked',
+        } : current);
         await refresh(selectedListenerId);
         setTab('training');
     });

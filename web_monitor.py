@@ -107,7 +107,7 @@ def _socket_listener_public(job: dict) -> dict:
     if stop_received:
         job["status"] = "stopped"
         job["metadata_status"] = "stopped"
-    result = {key: value for key, value in job.items() if key != "pending_audio"}
+    result = {key: value for key, value in job.items() if key not in {"pending_audio", "training_process", "process", "metadata_process"}}
     aligned = Path(str(job.get("aligned_training_output", "")))
     rows = _read_json_lines(aligned) if aligned.is_file() else []
     result["observed_windows"] = len(rows)
@@ -133,18 +133,27 @@ def _socket_listener_public(job: dict) -> dict:
     training_report = _read_json_file(training_request_path, {}) if training_request_path.is_file() else {}
     result["training_report"] = training_report
     result["training_blockers"] = training_report.get("blockers", []) if isinstance(training_report, dict) else []
+    if isinstance(training_report, dict) and training_report.get("minimum_labeled_windows") is not None:
+        result["minimum_labeled_windows"] = int(training_report["minimum_labeled_windows"])
+    if isinstance(training_report, dict) and isinstance(training_report.get("dataset_report"), dict):
+        result["dataset_report"] = training_report["dataset_report"]
+    if isinstance(training_report, dict) and training_report.get("accepted"):
+        result["training_output"] = training_report.get("training_output")
+        result["training_log"] = training_report.get("training_log")
+        if training_process is None:
+            result["training_status"] = "completed" if (Path(str(training_report.get("training_output", ""))) / "metrics.json").is_file() else "unknown"
     result["training_gate"] = {
         "stop_received": stop_received,
         "can_request_batch": stop_received,
         "observed_windows": len(rows),
-        "minimum_windows": int(job.get("minimum_labeled_windows", 120)),
+        "minimum_windows": result["minimum_labeled_windows"],
         "status": job.get("status"),
     }
     result["stop_received"] = stop_received
     result["stop_received_at"] = job.get("stop_received_at") or job.get("stopped_at")
-    metrics_path = Path(str(job.get("training_output", ""))) / "metrics.json"
+    metrics_path = Path(str(result.get("training_output", ""))) / "metrics.json"
     result["training_metrics"] = _read_json_file(metrics_path, {}) if metrics_path.is_file() else None
-    training_log = Path(str(job.get("training_log", "")))
+    training_log = Path(str(result.get("training_log", "")))
     result["training_log_tail"] = training_log.read_text(encoding="utf-8", errors="replace")[-12000:] if training_log.is_file() else ""
     model_vector = None
     model_vector_error = job.get("latest_context_error")
