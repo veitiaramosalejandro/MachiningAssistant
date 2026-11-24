@@ -648,7 +648,9 @@ def _socket_stream_observation(job: dict) -> dict:
         context = data.get("context", data.get("Context"))
         events = data.get("events", data.get("Events"))
         message_candidate = data.get("message", data.get("Message"))
-        if kind == "playback" and not ((isinstance(context, dict) and context) or (isinstance(events, list) and events)):
+        # Playback envelopes can contain only context and an empty events list.
+        # They are snapshots, not event-log rows; show them in latest_snapshot.
+        if kind == "playback" and not (isinstance(events, list) and events):
             continue
         if kind == "context" and not isinstance(context, dict):
             continue
