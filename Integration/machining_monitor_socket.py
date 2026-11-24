@@ -443,7 +443,7 @@ class MachiningMonitorSocketServer:
     def __init__(
         self,
         *,
-        host: str = "127.0.0.1",
+        host: str = "0.0.0.0",
         port: int = 7444,
         certificate_file: str | Path,
         private_key_file: str | Path | None = None,
@@ -684,7 +684,11 @@ class MachiningMonitorSocketServer:
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="MachiningMonitor Analyzer TLS socket server")
-    parser.add_argument("--host", default="127.0.0.1", help="Local address to bind")
+    parser.add_argument(
+        "--host",
+        default="0.0.0.0",
+        help="Local bind address; 0.0.0.0 accepts connections on localhost and all network interfaces",
+    )
     parser.add_argument("--port", type=int, default=7444, help="TLS socket port")
     parser.add_argument("--ffmpeg", default=DEFAULT_FFMPEG, help="FFmpeg executable used for each RTSP session")
     parser.add_argument("--audio-transport", choices=("tcp", "udp"), default="tcp")
