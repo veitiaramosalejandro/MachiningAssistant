@@ -929,7 +929,13 @@ def stop_rtsp_listener(listener_id: str) -> dict:
             _rtsp_listener_jobs[listener_id] = job
         if job.get("ingestion_mode") == "machining_monitor_socket":
             result = _socket_listener_public(job)
-            result["stop_control"] = "MachiningMonitor debe cerrar la sesión del Analyzer"
+            # This endpoint detaches only the web monitor. MachiningMonitor
+            # owns the socket session and must continue receiving data until
+            # it sends analysis.stop.
+            _rtsp_listener_jobs.pop(listener_id, None)
+            result["detached"] = True
+            result["connection_mode"] = "machining_monitor_socket"
+            result["connection_message"] = "Web monitor desconectado; la sesión del socket continúa bajo control de MachiningMonitor."
             return result
         process = job.get("process")
         metadata_process = job.get("metadata_process")

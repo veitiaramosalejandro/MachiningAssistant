@@ -609,10 +609,12 @@ function App() {
     const connect = () => start('/api/rtsp-training/listener/start', config, operationText('connect')).then((result) => { if (result) setTab('stream'); });
     const disconnect = async () => {
         const result = await start('/api/rtsp-training/listener/stop', {listener_id: listenerId}, operationText('disconnect'));
-        // A socket listener is stopped by MachiningMonitor after it sends
-        // analysis.stop. Keep its id so the UI can poll the final status and
-        // enable the training action for that completed capture.
-        if (result?.ingestion_mode !== 'machining_monitor_socket') setListenerId(null);
+        if (result) {
+            setListenerId(null);
+            setListener(null);
+            setTab('config');
+            setLog('Web monitor desconectado de la sesión socket. MachiningMonitor continúa controlando la sesión.');
+        }
     };
     const train = () => start('/api/rtsp-training/train', {
         listener_id: listenerId,
@@ -634,7 +636,7 @@ function App() {
                 <button className={tab === key ? 'tab active' : 'tab'} onClick={() => setTab(key)}
                         key={key}>{label}</button>)}</nav>
             {tab === 'config' &&
-                <ConfigurationView {...{config, setConfig, listenerId, listenerStatus: listener?.status, listenerCanTrain: listener?.training_gate?.can_request_batch, t, log, setLog, busy}} onValidate={validate}
+                <ConfigurationView {...{config, setConfig, listenerId, listenerStatus: listener?.status, t, log, setLog, busy}} onValidate={validate}
                                onConnect={connect} onDisconnect={disconnect} onTrain={train}/>}{tab === 'stream' &&
             <StreamView listener={listener} t={t}/>}{tab === 'training' && <TrainingView listener={listener} t={t}/>} {busy && <LoadingOverlay message={busy} language={language}/>}</section>
     </main>;
