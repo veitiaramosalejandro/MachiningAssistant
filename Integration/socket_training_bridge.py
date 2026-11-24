@@ -191,7 +191,10 @@ class SocketTrainingBridge:
             data = payload.get("data")
             events_value = data.get("Events", data.get("events")) if isinstance(data, dict) else None
             events = [event for event in events_value if isinstance(event, dict)] if isinstance(events_value, list) else []
-            job["latest_events"] = events
+            # Do not erase the last real event when the following context
+            # message contains an empty Events array.
+            if events:
+                job["latest_events"] = events
             job["metadata_events"] = int(job["metadata_events"]) + len(events)
             job["latest_context_position_seconds"] = payload.get("positionSeconds")
             raw_context = data.get("Context", data.get("context")) if isinstance(data, dict) else None

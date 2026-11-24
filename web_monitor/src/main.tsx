@@ -543,19 +543,6 @@ function App() {
             transport: typeof data.transport === 'string' ? data.transport : current.transport,
         }));
     }, []);
-    useEffect(() => {
-        if (!listener) return;
-        console.info('[rtsp/status]', {
-            listenerId: listener.listener_id,
-            status: listener.status,
-            stopReceived: listener.stop_received === true,
-            stopReceivedAt: listener.stop_received_at ?? null,
-            observedWindows: listener.observed_windows ?? 0,
-            metadataMessages: listener.metadata_messages ?? listener.stream_observation?.metadata_messages ?? 0,
-            currentEvents: listener.stream_observation?.current_events?.length ?? 0,
-            historicalEvents: listener.stream_observation?.historical_events?.length ?? 0,
-        });
-    }, [listener]);
     const refresh = useCallback(async (id: string | null) => {
         if (!id) return;
         try {
@@ -567,25 +554,56 @@ function App() {
         }
     }, [syncReceivedSocketConfiguration]);
     useEffect(() => {
-        request<ListenerData & {active?: boolean; latest_stopped?: ListenerData}>('/api/rtsp-training/listener/active').then((data) => {
-            const stopped = data.latest_stopped;
-            const activeStartedAt = Number(data.started_at ?? 0);
-            const stoppedAt = Number(stopped?.stopped_at ?? stopped?.stop_received_at ?? 0);
-            const selected = stopped && stoppedAt >= activeStartedAt ? stopped : data;
-            if (selected.listener_id) {
-                setListenerId(selected.listener_id);
-                setListener(selected);
-                syncReceivedSocketConfiguration(selected);
-                if (selected === data && data.active) setTab('stream');
+        let cancelled = false;
+        let requestInFlight = false;
+        const poll = async () => {
+            if (requestInFlight) return;
+            requestInFlight = true;
+            try {
+                const active = await request<ListenerData & {active?: boolean; latest_stopped?: ListenerData}>('/api/rtsp-training/listener/active');
+                if (cancelled) return;
+
+                // Always prefer a currently active session. This allows the UI
+                // to follow a new socket session after the previous one stopped.
+                if (active.active && active.listener_id) {
+                    setListenerId(active.listener_id);
+                    setListener(active);
+                    syncReceivedSocketConfiguration(active);
+                    setTab('stream');
+                    return;
+                }
+
+                // With no active session, keep polling the selected session so
+                // a stopped session remains available for review/training.
+                const fallbackId = selectedListenerId || active.latest_stopped?.listener_id || active.listener_id || null;
+                if (fallbackId && fallbackId !== selectedListenerId) {
+                    setListenerId(fallbackId);
+                }
+                if (fallbackId === selectedListenerId) {
+                    await refresh(fallbackId);
+                } else {
+                    const fallback = active.latest_stopped?.listener_id === fallbackId ? active.latest_stopped : active;
+                    if (fallback.listener_id) {
+                        setListener(fallback);
+                        syncReceivedSocketConfiguration(fallback);
+                    }
+                }
+            } catch (error) {
+                if (!cancelled) {
+                    setLog(`Estado no disponible: ${error instanceof Error ? error.message : String(error)}`);
+                }
+            } finally {
+                requestInFlight = false;
             }
-        }).catch(() => {
-        });
-    }, [syncReceivedSocketConfiguration]);
-    useEffect(() => {
-        if (!selectedListenerId) return undefined;
-        const timer = setInterval(() => refresh(selectedListenerId), 3000);
-        return () => clearInterval(timer);
-    }, [selectedListenerId, refresh]);
+        };
+
+        void poll();
+        const timer = setInterval(() => void poll(), 3000);
+        return () => {
+            cancelled = true;
+            clearInterval(timer);
+        };
+    }, [refresh, selectedListenerId, syncReceivedSocketConfiguration]);
     const start = async (path: string, body: JsonObject, operation: string, updateListener = true): Promise<ListenerData | null> => {
         setBusy(operation);
         try {
