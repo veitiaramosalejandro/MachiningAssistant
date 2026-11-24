@@ -27,15 +27,6 @@ export default function ConfigurationView({
         [key]: value
     }));
     const analysisStopReceived = stopReceived === true || String(listenerStatus || '').trim().toLowerCase() === 'stopped';
-    const normalizedStatus = String(listenerStatus || '').trim().toLowerCase();
-    useEffect(() => {
-        console.log(listenerStatus);
-        console.log(normalizedStatus);
-        console.log(analysisStopReceived);
-        if (listenerStatus !== undefined && listenerStatus !== null) {
-            console.log(`[analysisStop] listenerStatus="${listenerStatus}" → normalized="${normalizedStatus}" → match=${analysisStopReceived}`);
-        }
-    }, [listenerStatus, normalizedStatus, analysisStopReceived]);
     const canTrain = Boolean(listenerId) && analysisStopReceived && !busy;
     const save = () => {
         const safe = {...config, rtsp_password: undefined};

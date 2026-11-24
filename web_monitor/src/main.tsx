@@ -560,12 +560,6 @@ function App() {
         if (!id) return;
         try {
             const data = await request<ListenerData>(`/api/rtsp-training/listener/status?listener_id=${encodeURIComponent(id)}`);
-            console.info('[rtsp/status-response]', {
-                listenerId: data.listener_id,
-                status: data.status,
-                stopReceived: data.stop_received === true,
-                stopReceivedAt: data.stop_received_at ?? null,
-            });
             setListener(data);
             syncReceivedSocketConfiguration(data);
         } catch (error) {
@@ -588,18 +582,19 @@ function App() {
         });
     }, [syncReceivedSocketConfiguration]);
     useEffect(() => {
-        console.log('selectedListenerId: ', selectedListenerId)
         if (!selectedListenerId) return undefined;
         const timer = setInterval(() => refresh(selectedListenerId), 3000);
         return () => clearInterval(timer);
     }, [selectedListenerId, refresh]);
-    const start = async (path: string, body: JsonObject, operation: string): Promise<ListenerData | null> => {
+    const start = async (path: string, body: JsonObject, operation: string, updateListener = true): Promise<ListenerData | null> => {
         setBusy(operation);
         try {
             const data = await post<ListenerData>(path, body);
-            setListener(data);
-            if (data.listener_id) setListenerId(data.listener_id);
-            syncReceivedSocketConfiguration(data);
+            if (updateListener) {
+                setListener(data);
+                if (data.listener_id) setListenerId(data.listener_id);
+                syncReceivedSocketConfiguration(data);
+            }
             setLog(JSON.stringify(data, null, 2));
             return data;
         } catch (error) {
@@ -645,7 +640,7 @@ function App() {
         listener_id: selectedListenerId,
         epochs: 60,
         device: 'auto'
-    }, operationText('train')).then((result) => { if (result) setTab('training'); });
+    }, operationText('train'), false).then((result) => { if (result) setTab('training'); });
     const changeLanguage = (value: string) => {
         if (!(value in TEXT)) return;
         const selected = value as Language;
