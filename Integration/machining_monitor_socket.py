@@ -221,6 +221,80 @@ class _AnalysisSession:
     audio: _AudioStreamWorker | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ReceivedAnalysisData:
+    """Typed representation of one ``analysis.data`` payload."""
+
+    session_id: str
+    sequence: int
+    kind: str
+    data: Payload
+    position_seconds: float
+
+    @classmethod
+    def from_payload(cls, payload: Payload) -> "ReceivedAnalysisData":
+        normalized = _validate_data(payload)
+        position = normalized.get("positionSeconds", 0)
+        return cls(
+            session_id=normalized["sessionId"],
+            sequence=normalized["sequence"],
+            kind=normalized["kind"],
+            data=dict(normalized["data"]),
+            position_seconds=float(position),
+        )
+
+    @property
+    def context(self) -> Payload | None:
+        value = self.data.get("Context", self.data.get("context"))
+        return value if isinstance(value, dict) else None
+
+    @property
+    def events(self) -> tuple[Payload, ...]:
+        value = self.data.get("Events", self.data.get("events"))
+        if not isinstance(value, list):
+            return ()
+        return tuple(item for item in value if isinstance(item, dict))
+
+    @property
+    def message(self) -> Payload | None:
+        value = self.data.get("Message", self.data.get("message"))
+        return value if isinstance(value, dict) else None
+
+    def to_payload(self) -> Payload:
+        return {
+            "sessionId": self.session_id,
+            "sequence": self.sequence,
+            "kind": self.kind,
+            "data": self.data,
+            "positionSeconds": self.position_seconds,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ReceivedSocketMessage:
+    """Typed representation of the complete framed socket JSON envelope."""
+
+    message_type: str
+    request_id: str
+    payload: Payload
+    version: int
+
+    @classmethod
+    def from_mapping(cls, message: Payload) -> "ReceivedSocketMessage":
+        _reject_unknown_fields(message, {"type", "requestId", "payload", "version"}, "socket message")
+        if message.get("version") != PROTOCOL_VERSION:
+            raise ValueError("unsupported TCP protocol version")
+        message_type = message.get("type")
+        if not isinstance(message_type, str) or not 0 < len(message_type) <= 64:
+            raise ValueError("message type must contain 1..64 characters")
+        return cls(
+            message_type=message_type,
+            request_id=_uuid(message.get("requestId"), "requestId"),
+            payload=_require_object(message.get("payload"), "payload"),
+            version=PROTOCOL_VERSION,
+        )
+
+
 def _require_object(value: Any, name: str) -> Payload:
     if not isinstance(value, dict):
         raise ValueError(f"{name} must be a JSON object")
@@ -267,18 +341,16 @@ async def read_message(reader: asyncio.StreamReader) -> dict[str, Any]:
     raw = await reader.readexactly(size)
     try:
         message = json.loads(raw.decode("utf-8"))
-        print(message)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("invalid UTF-8 JSON envelope") from exc
-    message = _require_object(message, "message")
-    if message.get("version") != PROTOCOL_VERSION:
-        raise ValueError("unsupported TCP protocol version")
-    message_type = message.get("type")
-    if not isinstance(message_type, str) or not 0 < len(message_type) <= 64:
-        raise ValueError("invalid message type")
-    request_id = _uuid(message.get("requestId"), "requestId")
-    payload = _require_object(message.get("payload"), "payload")
-    return {"type": message_type, "requestId": request_id, "payload": payload, "version": PROTOCOL_VERSION}
+    typed_message = ReceivedSocketMessage.from_mapping(_require_object(message, "message"))
+    print(typed_message.payload)
+    return {
+        "type": typed_message.message_type,
+        "requestId": typed_message.request_id,
+        "payload": typed_message.payload,
+        "version": typed_message.version,
+    }
 
 
 def _validate_start(payload: Payload) -> Payload:
@@ -347,6 +419,8 @@ def _validate_data(payload: Payload) -> Payload:
         raise ValueError("positionSeconds must be non-negative")
     if "data" not in result:
         raise ValueError("data is required")
+    if not isinstance(result["data"], dict):
+        raise ValueError("data must be an object")
     return result
 
 
@@ -561,21 +635,19 @@ class MachiningMonitorSocketServer:
         session = self._sessions.get(session_id)
         if session is None:
             raise ValueError("unknown session")
+        received = ReceivedAnalysisData.from_payload(payload)
+        payload = received.to_payload()
         serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-        sequence = payload["sequence"]
+        sequence = received.sequence
         if sequence < session.sequence or (sequence == session.sequence and serialized != session.last_data):
             raise ValueError("out of order or conflicting data")
         if sequence > session.sequence:
             session.sequence = sequence
             session.last_data = serialized
-        data = payload["data"]
-        if isinstance(data, dict):
-            context = data.get("Context", data.get("context"))
-            message = data.get("Message", data.get("message"))
-            if isinstance(context, dict):
-                session.latest_context = context
-            if isinstance(message, dict):
-                session.latest_message = message
+        if received.context is not None:
+            session.latest_context = received.context
+        if received.message is not None:
+            session.latest_message = received.message
         session.lease_deadline = time.monotonic() + session.start["leaseSeconds"]
         default_state = "dataAccepted" if session.audio and session.audio.is_receiving else "audioReconnecting"
         return await self._call_handler("analysis.data", payload, default_state)

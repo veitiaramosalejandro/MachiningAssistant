@@ -639,9 +639,39 @@ def _rtsp_stream_observation(job: dict) -> dict:
 def _socket_stream_observation(job: dict) -> dict:
     """Expose the socket metadata log in the shape consumed by the stream tab."""
     messages = _read_json_lines(Path(str(job.get("socket_data_output", ""))))
+    historical_events = []
     current_events = []
     type_counts: dict[str, int] = {}
-    for item in messages[-100:]:
+    latest_context = job.get("latest_context")
+
+    def socket_row(item: dict, context: object, data: dict, kind: str) -> dict:
+        message = data.get("message", data.get("Message"))
+        if not isinstance(message, dict):
+            message = data
+        event = message.get("event") if isinstance(message.get("event"), dict) else message
+        parameters = event.get("parameters") if isinstance(event.get("parameters"), dict) else {}
+        spindle = parameters.get("SpindleSpeed") if isinstance(parameters.get("SpindleSpeed"), dict) else {}
+        feed = parameters.get("FeedRate") if isinstance(parameters.get("FeedRate"), dict) else {}
+        return {
+            "timestamp_seconds": item.get("positionSeconds", 0),
+            "recording_id": event.get("recordingId") or item.get("sessionId"),
+            "sequence": item.get("sequence"),
+            "socket_kind": kind,
+            "message_summary": json.dumps(data, ensure_ascii=False, separators=(",", ":"))[:500],
+            "context_payload": context if isinstance(context, dict) and context else None,
+            "occurrence": event.get("occurrence") or kind,
+            "value": event.get("value") or event.get("status") or "received",
+            "machine_state": event.get("machine_state_label") or event.get("machine_state"),
+            "machine_activity": event.get("machine_activity_label") or event.get("machine_activity"),
+            "quality": event.get("quality"),
+            "observations": event.get("observations"),
+            "programmed_rpm": spindle.get("ProgrammedRpm"),
+            "adjusted_rpm": spindle.get("AdjustedRpm"),
+            "programmed_feed": feed.get("ProgrammedMmPerMin"),
+            "adjusted_feed": feed.get("AdjustedMmPerMin"),
+        }
+
+    for item in messages:
         kind = str(item.get("kind", "unknown"))
         type_counts[kind] = type_counts.get(kind, 0) + 1
         data = item.get("data") if isinstance(item.get("data"), dict) else {}
@@ -658,41 +688,25 @@ def _socket_stream_observation(job: dict) -> dict:
             continue
         if kind not in {"context", "event", "playback"} and not data:
             continue
-        message = data.get("message", data.get("Message"))
-        if not isinstance(message, dict):
-            message = data
-        event = message.get("event") if isinstance(message.get("event"), dict) else message
-        parameters = event.get("parameters") if isinstance(event.get("parameters"), dict) else {}
-        spindle = parameters.get("SpindleSpeed") if isinstance(parameters.get("SpindleSpeed"), dict) else {}
-        feed = parameters.get("FeedRate") if isinstance(parameters.get("FeedRate"), dict) else {}
-        summary = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
-        current_events.append({
-            "timestamp_seconds": item.get("positionSeconds", 0),
-            "recording_id": event.get("recordingId") or item.get("sessionId"),
-            "sequence": item.get("sequence"),
-            "socket_kind": kind,
-            "message_summary": summary[:500],
-            "context_payload": context if isinstance(context, dict) and context else None,
-            "occurrence": event.get("occurrence") or kind,
-            "value": event.get("value") or event.get("status") or "received",
-            "machine_state": event.get("machine_state_label") or event.get("machine_state"),
-            "machine_activity": event.get("machine_activity_label") or event.get("machine_activity"),
-            "quality": event.get("quality"),
-            "observations": event.get("observations"),
-            "programmed_rpm": spindle.get("ProgrammedRpm"),
-            "adjusted_rpm": spindle.get("AdjustedRpm"),
-            "programmed_feed": feed.get("ProgrammedMmPerMin"),
-            "adjusted_feed": feed.get("AdjustedMmPerMin"),
-        })
+        row = socket_row(item, context, data, kind)
+        # MachiningMonitor marks the initial replay explicitly as playback.
+        # Those messages belong to the connection history; context/event data
+        # arriving afterward belongs to the current session.
+        if kind == "playback":
+            historical_events.append(row)
+        else:
+            current_events.append(row)
+        if isinstance(context, dict) and context:
+            latest_context = context
     return {
         "message_counts": type_counts,
         "metadata_messages": len(messages),
         "metadata_events": sum(1 for item in messages if item.get("kind") == "event"),
         "metadata_snapshots": sum(1 for item in messages if item.get("kind") in {"context", "playback"}),
-        "historical_events": [],
-        "current_events": current_events,
-        "metadata_phase": "current" if messages else "waiting_socket_data",
-        "latest_snapshot": job.get("latest_context"),
+        "historical_events": historical_events[-100:],
+        "current_events": current_events[-100:],
+        "metadata_phase": "current" if current_events else ("historical_bootstrap" if historical_events else "waiting_socket_data"),
+        "latest_snapshot": latest_context,
         "recent_audio_predictions": [],
     }
 
