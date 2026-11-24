@@ -172,7 +172,8 @@ const TEXT = {
         disconnected: 'desconectado',
         waiting: 'en espera',
         error: 'error',
-        noData: 'Sin datos todavía.'
+        noData: 'Sin datos todavía.',
+        contextDetails: 'Contexto recibido', viewContext: 'Ver contexto', close: 'Cerrar'
     },
     en: {
         language: 'Language',
@@ -246,7 +247,8 @@ const TEXT = {
         disconnected: 'disconnected',
         waiting: 'waiting',
         error: 'error',
-        noData: 'No data yet.'
+        noData: 'No data yet.',
+        contextDetails: 'Received context', viewContext: 'View context', close: 'Close'
     },
     'pt-PT': {
         language: 'Idioma',
@@ -320,7 +322,8 @@ const TEXT = {
         disconnected: 'desligado',
         waiting: 'a aguardar',
         error: 'erro',
-        noData: 'Sem dados.'
+        noData: 'Sem dados.',
+        contextDetails: 'Contexto recebido', viewContext: 'Ver contexto', close: 'Fechar'
     },
 };
 
