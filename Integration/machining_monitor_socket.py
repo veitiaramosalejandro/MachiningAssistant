@@ -341,11 +341,12 @@ async def read_message(reader: asyncio.StreamReader) -> dict[str, Any]:
     raw = await reader.readexactly(size)
     try:
         message = json.loads(raw.decode("utf-8"))
-        print(message)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("invalid UTF-8 JSON envelope") from exc
     typed_message = ReceivedSocketMessage.from_mapping(_require_object(message, "message"))
-    print(typed_message.payload)
+    if typed_message.payload != {}:
+        print(message)
+
     return {
         "type": typed_message.message_type,
         "requestId": typed_message.request_id,
