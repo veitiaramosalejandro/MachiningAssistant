@@ -6,9 +6,19 @@ param(
 $ErrorActionPreference = "Stop"
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Path $output -Force | Out-Null
+$dnsNames = @(
+    $CommonName,
+    "localhost",
+    "PCDEV17"
+) | Select-Object -Unique
+$ipNames = @("127.0.0.1", "172.16.10.136", "172.16.10.137")
+$subjectAlternativeNameExtension = "2.5.29.17={text}" +
+    (($dnsNames | ForEach-Object { "DNS=$($_)" }) -join "&") + "&" +
+    (($ipNames | ForEach-Object { "IPAddress=$($_)" }) -join "&")
 
 $certificate = New-SelfSignedCertificate `
-    -DnsName @($CommonName, "127.0.0.1") `
+    -Subject "CN=$CommonName" `
+    -TextExtension $subjectAlternativeNameExtension `
     -CertStoreLocation "Cert:\CurrentUser\My" `
     -FriendlyName "MachiningAssistant Analyzer development TLS" `
     -KeyAlgorithm RSA `
