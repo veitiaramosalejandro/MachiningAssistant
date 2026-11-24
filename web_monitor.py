@@ -123,6 +123,13 @@ def _socket_listener_public(job: dict) -> dict:
             job["training_checkpoint"] = str(checkpoint) if checkpoint.is_file() else None
     result["training_status"] = job.get("training_status", "idle")
     result["training_checkpoint"] = job.get("training_checkpoint")
+    result["training_gate"] = {
+        "stop_received": job.get("status") in {"stopped", "completed"},
+        "can_request_batch": job.get("status") in {"stopped", "completed"},
+        "observed_windows": len(rows),
+        "minimum_windows": int(job.get("minimum_labeled_windows", 120)),
+        "status": job.get("status"),
+    }
     metrics_path = Path(str(job.get("training_output", ""))) / "metrics.json"
     result["training_metrics"] = _read_json_file(metrics_path, {}) if metrics_path.is_file() else None
     training_log = Path(str(job.get("training_log", "")))
@@ -725,7 +732,12 @@ def _socket_stream_observation(job: dict) -> dict:
     return {
         "message_counts": type_counts,
         "metadata_messages": len(messages),
-        "metadata_events": sum(1 for item in messages if item.get("kind") == "event"),
+        "metadata_events": sum(
+            len(item.get("data", {}).get("Events", item.get("data", {}).get("events", [])))
+            for item in messages
+            if isinstance(item.get("data"), dict)
+            and isinstance(item.get("data", {}).get("Events", item.get("data", {}).get("events", [])), list)
+        ),
         "metadata_snapshots": sum(1 for item in messages if item.get("kind") in {"context", "playback"}),
         "historical_events": historical_events[-100:],
         "current_events": current_events[-100:],

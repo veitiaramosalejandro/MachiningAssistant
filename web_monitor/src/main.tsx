@@ -634,7 +634,7 @@ function App() {
                 <button className={tab === key ? 'tab active' : 'tab'} onClick={() => setTab(key)}
                         key={key}>{label}</button>)}</nav>
             {tab === 'config' &&
-                <ConfigurationView {...{config, setConfig, listenerId, listenerStatus: listener?.status, t, log, setLog, busy}} onValidate={validate}
+                <ConfigurationView {...{config, setConfig, listenerId, listenerStatus: listener?.status, listenerCanTrain: listener?.training_gate?.can_request_batch, t, log, setLog, busy}} onValidate={validate}
                                onConnect={connect} onDisconnect={disconnect} onTrain={train}/>}{tab === 'stream' &&
             <StreamView listener={listener} t={t}/>}{tab === 'training' && <TrainingView listener={listener} t={t}/>} {busy && <LoadingOverlay message={busy} language={language}/>}</section>
     </main>;

@@ -5,9 +5,9 @@ import './select.css';
 
 function Field({ label, children }: FieldProps) { return <label className="field">{label}{children}</label>; }
 
-export default function ConfigurationView({ config, setConfig, listenerId, listenerStatus, t, log, setLog, onValidate, onConnect, onDisconnect, onTrain, busy }: ConfigurationProps) {
+export default function ConfigurationView({ config, setConfig, listenerId, listenerStatus, listenerCanTrain, t, log, setLog, onValidate, onConnect, onDisconnect, onTrain, busy }: ConfigurationProps) {
   const change = (key: keyof Config, value: Config[keyof Config]) => setConfig((current) => ({ ...current, [key]: value }));
-  const canTrain = Boolean(listenerId) && ['stopped', 'completed'].includes(String(listenerStatus || '')) && !busy;
+  const canTrain = Boolean(listenerId) && (listenerCanTrain ?? ['stopped', 'completed'].includes(String(listenerStatus || ''))) && !busy;
   const save = () => { const safe = { ...config, rtsp_password: undefined }; localStorage.setItem('rtspTrainingConfig', JSON.stringify(safe)); setLog('Configuración guardada. La contraseña no se persiste.'); };
   const reset = () => setConfig(config => ({ ...config, rtsp_url: 'rtsp://127.0.0.1:8555/audio', rtsp_username: '', rtsp_password: '', probe_timeout_seconds: 30, min_training_seconds: 600 }));
   const seconds = t.language === 'Language' ? 'seconds' : 'segundos';

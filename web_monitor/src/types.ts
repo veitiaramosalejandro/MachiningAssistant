@@ -39,6 +39,7 @@ export interface ConfigurationProps {
   setConfig: Dispatch<SetStateAction<Config>>;
   listenerId: string | null;
   listenerStatus?: string;
+  listenerCanTrain?: boolean;
   t: Labels;
   log: string;
   setLog: Dispatch<SetStateAction<string>>;
